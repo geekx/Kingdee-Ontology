@@ -8,7 +8,13 @@ on:
 
 # PyPI 可信发布(Trusted Publishing / OIDC)：无需任何 token。
 # 前置：在 pypi.org 项目 kingdee-mcp → Manage → Publishing 添加可信发布者，
-#       配置 Owner=WaHaiLong, Repository=KingdeeMCP, Workflow=publish.yml, Environment=(空)。
+#       配置 Owner=geekx, Repository=Kingdee-Ontology, Workflow=publish.yml, Environment=(空)。
+#
+# 排障：twine 报 `TrustedPublishingFailure: invalid-publisher`——PyPI 收到的 OIDC
+# claims（当前仓库 owner/repo/workflow 路径）跟它那边登记的可信发布者对不上，最常见
+# 原因是仓库改过名或转过 owner（本仓库经历过 WaHaiLong/KingdeeMCP → geekx/Kingdee-
+# Ontology），但 pypi.org 上的登记没跟着更新。改代码/工作流修不了这个——去
+# pypi.org 项目页把登记信息改成上面这行，跟仓库当前的真实 owner/repo 对齐。
 # 本工作流须有 `id-token: write` 权限，twine 会自动用 OIDC 令牌上传。
 # `contents: write` 是给下面"同步到 GitHub Release"那步用的（创建 Release 需要写权限）。
 permissions:
@@ -49,7 +55,7 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            完整变更说明见 [CHANGELOG.md](https://github.com/geekx/KingdeeMCP/blob/main/CHANGELOG.md)。
+            完整变更说明见 [CHANGELOG.md](https://github.com/geekx/Kingdee-Ontology/blob/main/CHANGELOG.md)。
 
             ```bash
             pip install kingdee-mcp
