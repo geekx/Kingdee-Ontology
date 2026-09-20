@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "kingdee-ontology": {
+      "command": "uvx",
+      "args": ["--from", "kingdee-mcp", "kingdee-ontology"],
+      "env": {
+        "KINGDEE_SERVER_URL": "http://YOUR-SERVER/k3cloud/",
+        "KINGDEE_ACCT_ID": "YOUR-ACCT-ID",
+        "KINGDEE_USERNAME": "YOUR-KINGDEE-USERNAME",
+        "KINGDEE_PASSWORD": "YOUR-KINGDEE-PASSWORD",
+        "KINGDEE_LCID": "2052"
+      }
+    }
+  }
+}

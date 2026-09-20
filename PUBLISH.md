@@ -9,14 +9,31 @@
 
 | 项 | 值 |
 |----|----|
-| PyPI 包名 | `kingdee-mcp` |
-| 已发布版本 | 0.1.0（PyPI），本地源码为 **0.2.0**（已 `python -m build`，`dist/` 已生成但**未上传**） |
-| GitHub | https://github.com/WaHaiLong/KingdeeMCP |
+| PyPI 包名 | `kingdee-mcp`（`kingdee_ontology` 与 `kingdee_mcp` 同一个发行版，不是两个包） |
+| 已发布版本 | **0.2.1**（PyPI 现状），本地 `pyproject.toml` 已是 **0.3.0**——已 `python -m build` + `twine check` + 装进干净 venv 实测导入/入口点都正常，**尚未打 tag、未上传** |
+| GitHub | https://github.com/geekx/KingdeeMCP |
 | 官网 | https://wahailong.github.io/KingdeeMCP/ |
-| 工具数 | 86 个，覆盖 13 大业务域 |
-| 启动入口 | `uvx kingdee-mcp` 或 `python -m kingdee_mcp.server` |
+| 工具数 | legacy 86 个（`kingdee-mcp`）+ 底座 11 个（`kingdee-ontology`） |
+| 启动入口 | `uvx kingdee-mcp`（legacy 86 工具）／`uvx --from kingdee-mcp kingdee-ontology`（底座 11 工具，同一个发行版里的另一个脚本）／`python -m kingdee_mcp.server` |
 | 认证方式 | 金蝶 WebAPI **账号密码(ValidateUser)**，无需 AppID / AppSecret |
-| 配置文件 | `pyproject.toml`（hatchling，脚本 `kingdee-mcp = kingdee_mcp.server:main`） |
+| 配置文件 | `pyproject.toml`（hatchling，脚本 `kingdee-mcp` / `kingdee-ontology` / `kd-logic` / `kingdee-setup-check`） |
+
+### 发布 0.3.0 到 PyPI 的方式（人工触发，不要自动化）
+
+`.github/workflows/publish.yml` 已配好 Trusted Publishing（OIDC，无需 token），触发条件是
+`push tag v*` 或手动 `workflow_dispatch`。**故意不设成每次 push 自动发布**——发布是不可逆
+操作（PyPI 不允许覆盖同版本号），且会消耗 GitHub Actions 分钟数，必须由人决定"现在发"：
+
+```bash
+# 方式一：打版本 tag（会真的触发发布，确认要发再执行）
+git tag v0.3.0
+git push origin v0.3.0
+
+# 方式二：GitHub 网页 Actions 标签页 → Publish to PyPI → Run workflow（无需先打 tag）
+```
+
+两种方式都会用当前 `main` 分支的 `pyproject.toml` 版本号打包上传，发布前确认版本号、
+CHANGELOG 都已经是想发布的状态。
 
 ---
 
@@ -61,6 +78,26 @@
 - **GitHub 导入**：WorkBuddy 技能管理选 **"通过 URL 导入"**，填 `https://github.com/WaHaiLong/KingdeeMCP`，并指定 `skill/kingdee-query` 子目录自动拉取。
 
 > 技能与 MCP 是**两个独立上架物**：技能负责"语义路由 + 使用约定"，MCP 负责真正的金蝶连接。两者配合使用体验最佳。
+
+---
+
+## 3b. 发布配套 Skill（kingdee-ontology）到市场
+
+`skill/kingdee-ontology/` 是对象为中心的底座技能（对应 11 工具的 `kingdee-ontology` 入口，
+不是 `kingdee-query` 依赖的那个 86 工具 legacy 服务）。提交材料：
+
+| 字段 | 值 |
+|------|-----|
+| 名称 | `kingdee-ontology` |
+| 描述 | 以对象为中心操作金蝶云星空：打开一个对象就能看到属性、当前状态、此刻能做哪些动作（不能做的会说明原因）、连到哪些别的对象；支持查询、提交/审核/下推、租户自定义业务操作编排、卡单排查。 |
+| 版本 | 与 PyPI 对齐——**待 0.3.0 正式发布后再填 0.3.0**，发布前先填当前 PyPI 上的 0.2.1 或标注"预发布" |
+| 标签 | `erp` `金蝶` `kingdee` `mcp` `k3cloud` `ontology` |
+| 上传方式 | 填仓库地址 `https://github.com/geekx/KingdeeMCP`，或上传 `skill/kingdee-ontology/` 目录 |
+| 启动命令 | `uvx --from kingdee-mcp kingdee-ontology`（同一发行版里选另一个脚本，**不是** `uvx kingdee-ontology`——PyPI 上没有叫这个名字的独立包） |
+| 所需环境变量（只写变量名） | `KINGDEE_SERVER_URL` / `KINGDEE_ACCT_ID` / `KINGDEE_USERNAME` / `KINGDEE_PASSWORD` / `KINGDEE_LCID` |
+| 接入模板 | `examples/workbuddy-mcp-config-ontology.example.json`（已提供，含占位符） |
+
+流程同第 2 节：clawhub.ai → GitHub 登录 → 发布技能 → 按上表填写 → 提交审核。
 
 ---
 
