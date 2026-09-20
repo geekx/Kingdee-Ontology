@@ -10,8 +10,9 @@ on:
 # 前置：在 pypi.org 项目 kingdee-mcp → Manage → Publishing 添加可信发布者，
 #       配置 Owner=WaHaiLong, Repository=KingdeeMCP, Workflow=publish.yml, Environment=(空)。
 # 本工作流须有 `id-token: write` 权限，twine 会自动用 OIDC 令牌上传。
+# `contents: write` 是给下面"同步到 GitHub Release"那步用的（创建 Release 需要写权限）。
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -29,8 +30,30 @@ jobs:
       - name: Install build & twine
         run: python -m pip install --upgrade build twine
 
+      # 只在这一步编译一次：下面 PyPI 发布和同步 GitHub Release 用的是
+      # 同一份 dist/ 产物，不为了"发到两个地方"就编译两次——既浪费
+      # Actions 分钟数，也可能让两边拿到不完全一样的构建。
       - name: Build distributions
         run: python -m build
 
       - name: Publish to PyPI (Trusted Publishing, no token)
         run: twine upload dist/*
+
+      # 同步同一份 dist/ 到 GitHub Release，方便不想走 PyPI/uvx 的用户直接
+      # 下载 wheel/sdist。只在真实的 tag push 时才建 Release——
+      # workflow_dispatch 手动重跑（比如排查发布问题）不会平白造一个 Release。
+      - name: 同步到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            完整变更说明见 [CHANGELOG.md](https://github.com/geekx/KingdeeMCP/blob/main/CHANGELOG.md)。
+
+            ```bash
+            pip install kingdee-mcp
+            # 或
+            uvx kingdee-mcp                        # legacy 86 工具
+            uvx --from kingdee-mcp kingdee-ontology # 本体底座 11 工具
+            ```
