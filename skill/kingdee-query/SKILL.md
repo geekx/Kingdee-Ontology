@@ -22,7 +22,10 @@ description: 基于已连接的 kingdee-mcp（第三方开源金蝶云星空 MCP
   - `KINGDEE_LCID`：语言区，默认 `2052`（简体中文）
   - `MCP_SQLSERVER_*`：SQL Server 主机/端口/库/账号，启用数据库探查工具
 - 认证方式：金蝶 WebAPI **账号密码(ValidateUser)**，无需 AppID / AppSecret。
-- 若尚未配置，请把仓库 `examples/workbuddy-mcp-config.example.json` 中的 `kingdee` 片段加入用户级 `~/.workbuddy/mcp.json`（替换占位符），重启 WorkBuddy 后再用本技能。
+- 若尚未配置：**不要代用户读写 `~/.workbuddy/mcp.json`**——这个文件配置好之后会长期装着账号密码明文。把仓库
+  `examples/workbuddy-mcp-config.example.json` 里的 `kingdee` 片段原样念给用户，提示"把占位符换成真实值、
+  存到 `~/.workbuddy/mcp.json`、重启 WorkBuddy"，由用户自己动手粘贴保存。会话里只给建议，不代劳——密码一旦
+  经过模型上下文，就多了一条泄漏路径，配置文件本身也可能被改坏。
 
 ## 二、触发示例
 

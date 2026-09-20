@@ -116,6 +116,24 @@ python scripts/extract_remember.py --update  # 追加到记忆文件
 每次长会话结束时，AI 应主动问：
 > "这次有哪些发现需要记忆？"
 
+### 凭据配置文件：只建议，不代劳
+
+`~/.workbuddy/mcp.json`、`claude_desktop_config.json`、`.mcp.json` 这类 MCP 客户端配置文件，
+一旦配好通常就长期装着账号密码明文（`KINGDEE_PASSWORD` 等）。**任何 skill 或 agent 指令都不该让
+会话去读、写、"帮用户改好"这类文件**——不管是引导新用户接入，还是排查连接问题：
+
+- 需要用户配置/改配置时，把 JSON 片段（模板，占位符即可）**念给用户**，让用户自己复制粘贴保存、
+  自己重启客户端；不要用工具直接打开、编辑这个文件本身。
+- 排障时同理：怀疑是配置问题，提出"检查一下 XXX 字段是否正确"这类建议，不要主动去读这个文件的内容
+  （哪怕是只读）——文件内容包含真实密码，一旦进入模型上下文就多了一条泄漏路径（对话记录、日志、
+  截图都可能带出去），价值也不对等：修一次配置不值得把明文密码过一遍上下文。
+- 这与本项目一贯的"只提议，不自动改配置"原则（见 `envfile.py` 不覆盖真实环境变量、WikiSkill 的
+  `_propose_to_wikiskill` 只提建议不自动写 profile）是同一条线——凭据文件比业务配置更敏感，标准
+  只能更严，不能更松。
+- 已知的历史反例：`skill/kingdee-query/SKILL.md` 曾经写过"请把配置片段加入用户级 `~/.workbuddy/mcp.json`"，
+  相当于指示 agent 代用户改这个文件——已改为"念给用户、由用户自己粘贴"。新增/修改任何 skill 时留意
+  不要重犯同样的写法。
+
 ## GitHub Pages (`docs/`)
 
 The website at `https://wahailong.github.io/KingdeeMCP/` is a single static HTML file (`docs/index.html`). The deploy workflow (`.github/workflows/deploy-pages.yml`) triggers on push to `main` branch.
