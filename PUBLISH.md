@@ -35,6 +35,12 @@ git push origin v0.3.0
 两种方式都会用当前 `main` 分支的 `pyproject.toml` 版本号打包上传，发布前确认版本号、
 CHANGELOG 都已经是想发布的状态。
 
+**同一次 workflow 里只编译一次**：`python -m build` 产出的 `dist/*` 先 `twine upload` 到
+PyPI，再原样同步到 GitHub Release（`softprops/action-gh-release`）——不为了"发两个地方"
+跑两次编译，也不会让 PyPI 和 Release 上的文件出现差异。Release 只在**真实打 tag** 时创建
+（`workflow_dispatch` 手动重跑不会平白造一个 Release），文件与自动生成的 commit 日志一起挂在
+`https://github.com/geekx/KingdeeMCP/releases`，不想走 PyPI/uvx 的用户也能直接下载 wheel/sdist。
+
 ---
 
 ## 1. 发布前自检（Checklist）
