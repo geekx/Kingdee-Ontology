@@ -185,7 +185,7 @@ class TestSavePreprocessingParity:
                 fixed = dict(model)
                 if "FSalesOrgId" in fixed:                    # 故意写错的字段名
                     fixed["FSaleOrgId"] = fixed.pop("FSalesOrgId")
-                return fixed, [{"from": "FSalesOrgId", "to": "FSaleOrgId"}]
+                return fixed, [{"from": "FSalesOrgId", "to": "FSaleOrgId"}], []
 
         async def _fake_validator(form_id, force=False):
             return _Validator()

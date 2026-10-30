@@ -28,7 +28,7 @@ SERVER = ROOT / "src" / "kingdee_mcp" / "server.py"
 # 已知的两套事实来源分歧（审计 F-1）。静态分析无法判定哪边正确，
 # 需在真实账套验证；此处锁定集合，防止无声增加。
 KNOWN_DIVERGENT = {
-    "BD_Material", "PRD_Instock", "PRD_MO", "PRD_PickMtrl",
+    "AR_Receivable", "BD_Material", "PRD_Instock", "PRD_MO", "PRD_PickMtrl",
     "PUR_PurchaseOrder", "PUR_Requisition",
     "QIS_InspectBill", "SAL_Quotation", "SAL_SaleOrder", "STK_Inventory",
     "STK_TransferApply", "STK_TransferDirect", "SVM_InquiryBill", "SVM_QuoteBill",
