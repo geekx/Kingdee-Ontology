@@ -76,10 +76,11 @@ def test_metadata_validator():
         ]
     }
 
-    fixed, fixes = validator.validate_and_fix(payload)
+    fixed, fixes, unknown = validator.validate_and_fix(payload)
     print(f"  原始字段: {list(payload.keys())}")
     print(f"  修正后: {list(fixed.keys())}")
     print(f"  修正列表: {fixes}")
+    print(f"  未知字段: {unknown}")
 
     # 验证（与现实现行为一致）
     assert "FSaleOrgId" in fixed, "FSalesOrgId 应该被修正为 FSaleOrgId"
@@ -98,9 +99,10 @@ def test_metadata_validator():
         ]
     }
 
-    fixed2, fixes2 = validator.validate_and_fix(payload2)
+    fixed2, fixes2, unknown2 = validator.validate_and_fix(payload2)
     print(f"  修正列表: {fixes2 if fixes2 else '无修正'}")
     assert len(fixes2) == 0, "正确的字段不应被修改"
+    assert len(unknown2) == 0, "正确字段不应被判为未知"
     print("  [PASS]")
 
     # 测试3: 获取有效字段列表

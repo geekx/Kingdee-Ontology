@@ -171,8 +171,13 @@ class TestConvergenceCoverage:
     """收敛覆盖率不许回退，且"刻意不收"必须有明文理由。"""
 
     def test_coverage_does_not_regress(self, cov):
+        # 门槛随「刻意不收」的工具数量诚实下调，不是随便改：新增只读工具里，
+        # kingdee_download_attachment 走的是分块二进制协议，不是本体模型能
+        # 表达的结构化字段查询（见 measure_convergence.py 的 DELIBERATE 理由），
+        # 分母涨了但分子不该跟着凑数，所以 94% → 93%。真正的覆盖回归（本该能收
+        # 却没收）会被 test_every_uncovered_tool_is_deliberate 拦住，不靠这个阈值。
         pct = len(cov["covered"]) * 100 // cov["total"]
-        assert pct >= 94, (
+        assert pct >= 93, (
             f"只读工具收敛率跌到 {pct}%（{len(cov['covered'])}/{cov['total']}）。"
             f"未覆盖：{sorted(cov['uncovered'])}")
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kingdee-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "金蝶云星空本体底座 + MCP 服务端：五元本体、判断层、Saga 编排，可独立运行"
 readme = "README.md"
 license = "MIT"

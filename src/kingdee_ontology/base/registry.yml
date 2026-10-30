@@ -583,6 +583,15 @@ nouns:
     legacy_fields: "FID,FBillNo,FDate,FDocumentStatus,FMoBillNo,FMaterialId.FNumber,FMaterialId.FName,FInQty,FStockId.FName"
     legacy_tool: kingdee_query_production_stock_in
 
+  SUB_SubReqOrder:
+    zh: 委外加工订单
+    category: bill
+    alias: [委外订单, 委外加工, 外协, CP委外, WIP, 在制, 委外在制]
+    # legacy 只有查询工具 kingdee_query_outsource_orders，没有对应的保存/提交/
+    # 审核工具，这里只开放 query/read，不臆测这张单在本账套是否允许二次开发写入。
+    allowed_verbs: [query, read]
+    default_fields: "FID,FBillNo,FDate,FDocumentStatus,FStatus,FSupplierId.FName,FSupplierId.FNumber,FTreeEntity_FEntryID,FMaterialId.FNumber,FMaterialId.FName,FMaterialId.FSpecification,FQty,FStockInQty,FNoStockInQty,FPlanFinishDate,FUnitId.FName,FLot.FNumber,FPurOrderNo"
+
   ER_ExpenseRequest:
     zh: 费用申请单
     category: bill

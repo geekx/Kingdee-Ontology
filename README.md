@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.WaHaiLong/kingdee-mcp -->
+
 # Kingdee MCP Server —— 让 AI 直接操作金蝶云星空 ERP
 
 > ⚠️ 本项目为**第三方开源**，非金蝶官方出品，与金蝶软件（Kingdee）无任何隶属或授权关系。
@@ -7,9 +9,9 @@
 
 ## 本分支的增补：操作原子化审计 + Ontology 建模 + 三层架构
 
-> **分支** `claude/kingdee-mcp-ontology-audit-nis4mg` ｜ **基线** 上游 `2c44e6f` ｜ **包版本** `v0.3.0`
-> **更新于** 2026-10-30 13:29 UTC+08:00
-> **测试** 2911 passed, 404 skipped, 1 warning in 24.33s（本机实测）｜ **原子性审计** 5 项发现 / 0 项 error
+> **分支** `claude/kingdee-mcp-ontology-audit-nis4mg` ｜ **基线** 上游 `2c44e6f` ｜ **包版本** `v0.4.0`
+> **更新于** 2026-10-30 13:59 UTC+08:00
+> **测试** 3066 passed, 421 skipped, 1 warning in 45.76s（本机实测）｜ **原子性审计** 5 项发现 / 0 项 error
 >
 > 本区块由 `python3 tools/ontology/update_readme.py` 生成，数字均为实测。
 
@@ -20,15 +22,15 @@
 
 | 指标 | 之前 | 现在 |
 |---|---|---|
-| MCP 工具面 `tools/list` | ~46,427 token（200k 上下文的 23%） | ~2,405 token（**-95%**） |
+| MCP 工具面 `tools/list` | ~49,297 token（200k 上下文的 24%） | ~2,405 token（**-96%**） |
 | 操作链约束层覆盖率 | 25%（24 个写动词只认 3 个） | **100%**（漏登记 = CI 失败） |
 | 自动审计 error | 7 | **0** |
-| 只读工具可由底座表达 | 0 / 72 | **68 / 72（94%）** |
+| 只读工具可由底座表达 | 0 / 75 | **70 / 75（93%）** |
 
-工具从 98 个收敛到 11 个，而注册表里的名词从 48 长到 **85** 个——
-**名词是数据不是能力**：名词涨了 77%，底座工具只多了 2 个。
+工具从 102 个收敛到 11 个，而注册表里的名词从 48 长到 **86** 个——
+**名词是数据不是能力**：名词涨了 79%，底座工具只多了 2 个。
 
-未收敛的 4 个全是 SQL Server 目录探查，**刻意保留** ——
+未收敛的 5 个全是 SQL Server 目录探查，**刻意保留** ——
 它们的数据来自数据库系统表而非金蝶 WebAPI，需要另一套凭据，
 折叠进来会让同一个工具横跨两个数据源、两套权限模型。
 
@@ -36,7 +38,7 @@
 
 | 层 | 位置 | 作用 |
 |---|---|---|
-| MCP 底座 | [`base/`](base/) | 14 个动词 × 85 个名词的组合，11 个通用工具；契约随结果返回；前置规则在发请求前拦截 |
+| MCP 底座 | [`base/`](base/) | 14 个动词 × 86 个名词的组合，11 个通用工具；契约随结果返回；前置规则在发请求前拦截 |
 | Skill 实例层 | [`skill/`](skill/) [`profiles/`](profiles/) | 用法知识渐进披露；**各家二开差异写在租户覆盖层**，业务人员用中文定义业务操作入口 |
 | 对象层（两种形态） | [`base/objects.py`](base/objects.py) · [`ui/`](docs/ontology/ui/) | 以对象为中心操作：属性 / 状态 / **此刻能做什么** / 连到什么。Skill 形态给 Claude，[界面形态](https://claude.ai/code/artifact/91595855-e6de-4182-8369-ddaa7c09fd50)给人 |
 | WikiSkill 自优化 | [`wikiskill/`](wikiskill/) | 每日回溯审计记录 → 跨天印证才浮上来 → 人 adopt 后落地 |
@@ -133,7 +135,7 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **87 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务报表等 13+ 大业务域
+- **101 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、单据附件、财务、委外加工、财务报表等 17 大业务域
 - **元数据动态查询**：`get_bill_template` / `validate_bill` / `refresh_metadata`，元数据本地缓存
 - **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
@@ -174,6 +176,49 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 > 远程模式下**仍需金蝶账号密码**（通过 `KINGDEE_*` 环境变量注入）。HTTP 只是传输通道，并不替代金蝶认证——客户端连上来后，工具调用照样要走金蝶 ValidateUser 登录。
 
 也可用环境变量代替命令行参数：`KINGDEE_MCP_TRANSPORT`（stdio/sse/streamable-http）、`KINGDEE_MCP_HOST`、`KINGDEE_MCP_PORT`。
+
+## Docker 部署
+
+不想在服务器上折腾 Python 环境的，直接用容器。
+
+**方式一：拉现成镜像（最快）**
+
+```bash
+docker run --rm -p 8000:8000 --env-file .env ghcr.io/wahailong/kingdeemcp:latest
+```
+
+镜像随每次发版自动构建推送，`latest` 跟最新 tag 走，也可以锁定具体版本号如 `:0.2.2`。
+
+**方式二：docker compose（推荐长期运行）**
+
+```bash
+cp .env.example .env      # 填 4 个 KINGDEE_* 变量
+docker compose up -d
+docker compose logs -f
+```
+
+**方式三：本地自己构建**
+
+```bash
+docker build -t kingdee-mcp .
+# 国内网络慢可换 pip 源：
+docker build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ -t kingdee-mcp .
+```
+
+起来之后 MCP 客户端连 `http://<宿主机IP>:8000/mcp`（Streamable HTTP）。
+
+几个容易踩的点：
+
+- 容器默认以 `streamable-http` 模式监听 `0.0.0.0:8000`。**别改回 127.0.0.1** —— 那样只有容器内部能连，宿主机映射了端口也访问不到。
+- 想让容器当本地 MCP 客户端的子进程用（stdio 模式）：
+  ```bash
+  docker run -i --rm --env-file .env -e KINGDEE_MCP_TRANSPORT=stdio ghcr.io/wahailong/kingdeemcp:latest
+  ```
+- 配置对不对，先自检一把（不起服务，只跑一次金蝶登录）：
+  ```bash
+  docker run --rm --env-file .env ghcr.io/wahailong/kingdeemcp:latest --check
+  ```
+- 容器里跑的是金蝶 API 那部分。SQL Server 直连探查工具还需要额外装微软 ODBC 驱动（`msodbcsql18`），镜像里只预装了 `unixodbc` 基础库。
 
 ## 配置教程
 
@@ -260,6 +305,7 @@ MCP 会话里也能做同样的事：`kd_check_profile(probe=True)`。
 | `KINGDEE_PASSWORD` | 金蝶账号密码（ValidateUser 登录，必填） | `your-password` |
 | `KINGDEE_TENANT` | 可选：租户覆盖层用哪一份 `profiles/<租户>/profile.yml` | `example-tenant` |
 | `KINGDEE_ENV_FILE` | 可选：显式指定凭据文件路径，覆盖默认查找顺序 | `/etc/kingdee/creds.env` |
+| `KINGDEE_ATTACHMENT_TIMEOUT` | 附件传输读写等待时间（秒，可选，默认 120；连接超时仍为 30） | `120` |
 | `MCP_SQLSERVER_HOST` | SQL Server 主机（可选，用于数据库探查） | `localhost` |
 | `MCP_SQLSERVER_PORT` | SQL Server 端口（默认 1433） | `1433` |
 | `MCP_SQLSERVER_DATABASE` | 数据库名 | `AIS20260309171043` |
@@ -280,24 +326,27 @@ MCP 会话里也能做同样的事：`kd_check_profile(probe=True)`。
 
 ## 可用工具列表
 
-共 **87 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
+共 **101 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
 
 | 业务域 | 数量 | 代表性工具 |
 |--------|------|-----------|
-| 通用单据 | 10 | `kingdee_save_bill` · `kingdee_submit_bills` · `kingdee_audit_bills` · `kingdee_validate_bill` · `kingdee_push_and_audit` |
+| 通用单据 | 15 | `kingdee_save_bill` · `kingdee_submit_bills` · `kingdee_audit_bills` · `kingdee_unaudit_bills` · `kingdee_delete_bills` · `kingdee_validate_bill` · `kingdee_push_bill` · `kingdee_close_bill` |
 | 生产制造 | 12 | `kingdee_query_production_orders` · `kingdee_save_production_order` · `kingdee_query_mrp_result` · `kingdee_push_production_pick` |
 | 成本核算 | 12 | `kingdee_query_material_cost` · `kingdee_query_cost_calculation` · `kingdee_save_cost_adjustment` · `kingdee_query_finished_product_cost` |
 | 固定资产 | 6 | `kingdee_query_fixed_asset` · `kingdee_save_asset` · `kingdee_query_asset_depreciation` |
 | 库存 | 9 | `kingdee_query_inventory` · `kingdee_query_stock_bills` · `kingdee_push_stock_transfer` · `kingdee_query_transfer_direct` |
-| 审计合规 | 7 | `kingdee_query_operation_logs` · `kingdee_query_change_log` · `kingdee_create_and_audit` · `kingdee_push_and_audit` |
-| 采购 | 4 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` · `kingdee_query_purchase_inquiry` |
-| 销售 | 2 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` |
+| 委外加工 | 1 | `kingdee_query_outsource_orders`（委外订单 SUB_SubReqOrder：在制量/逾期/回货交期） |
+| 审计合规 | 6 | `kingdee_query_operation_logs` · `kingdee_query_audit_log` · `kingdee_query_change_log` · `kingdee_query_permission_changes` · `kingdee_create_and_audit` · `kingdee_push_and_audit` |
+| 采购 | 5 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` · `kingdee_query_purchase_inquiry` · `kingdee_query_purchase_order_progress` · `kingdee_query_supplier_quotes` |
+| 销售 | 4 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` · `kingdee_query_sales_outstock` · `kingdee_query_delivery_notice` |
 | 工作流/审批 | 4 | `kingdee_query_pending_approvals` · `kingdee_workflow_approve` · `kingdee_query_approval_flow` |
-| 基础资料/权限 | 4 | `kingdee_query_materials` · `kingdee_query_partners` · `kingdee_query_user` · `kingdee_query_role` |
+| 基础资料/权限 | 5 | `kingdee_query_materials` · `kingdee_query_partners` · `kingdee_query_user` · `kingdee_query_role` · `kingdee_query_permission` |
 | 元数据/探查 | 8 | `kingdee_get_fields` · `kingdee_list_forms` · `kingdee_get_bill_template` · `kingdee_discover_tables` |
-| 系统/查询 | 4 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` |
+| 系统/其他 | 8 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` · `kingdee_query_number_rule` · `kingdee_query_loan_balance` · `kingdee_query_data_backup` |
 | 统计 | 2 | `kingdee_usage_stats` · `kingdee_usage_report` |
 | 财务报表 | 1 | `kingdee_query_report`（GetSysReportData 专用端点，查科目余额表/账龄分析表等总账报表） |
+| 单据附件 | 2 | `kingdee_upload_attachment` · `kingdee_download_attachment`（表头/分录附件、分块传输） |
+| 财务收款 | 1 | `kingdee_query_receipts`（收款单 AR_Receivable：实收金额/结算方式/核销金额） |
 
 > 元数据探查含 4 个 SQL Server 工具（`kingdee_discover_tables` / `kingdee_discover_columns` / `kingdee_describe_table` / `kingdee_discover_metadata_candidates`），需配置 `MCP_SQLSERVER_*` 环境变量。
 
@@ -319,6 +368,8 @@ MCP 会话里也能做同样的事：`kd_check_profile(probe=True)`。
 | `kingdee_query_sale_quotations` | 查询销售报价单（SAL_Quotation） |
 | `kingdee_query_stock_bills` | 查询出入库单据 |
 | `kingdee_query_inventory` | 查询即时库存 |
+| `kingdee_query_receipts` | 查询收款单（AR_Receivable）：实收金额、结算方式（现金/转账/承兑汇票）、核销金额，营收/回款/应收余额核心数据源 |
+| `kingdee_query_outsource_orders` | 查询委外加工订单（SUB_SubReqOrder）：在制量、逾期分析、回货交期预测，WIP 数据核心来源 |
 | `kingdee_query_materials` | 查询物料档案 |
 | `kingdee_query_partners` | 查询客户/供应商档案 |
 | `kingdee_query_report` | 财务报表查询（GetSysReportData 专用端点）：科目余额表 `GL_RPT_AccountBalance`、账龄分析表 `GL_AgingSchedule` 等总账报表，内层过滤参数按账套透传 |
@@ -332,6 +383,16 @@ MCP 会话里也能做同样的事：`kd_check_profile(probe=True)`。
 | `kingdee_audit_bills` | 审核单据 |
 | `kingdee_unaudit_bills` | 反审核单据 |
 | `kingdee_delete_bills` | 删除单据 |
+
+### 单据附件（WebAPI V6.0）
+
+| 工具名称 | 功能说明 |
+|----------|---------|
+| `kingdee_upload_attachment` | 上传 Base64 内容并绑定已存在的单据头或分录；单块最多 4 MiB，支持 FileId 续传 |
+| `kingdee_download_attachment` | 按 FileId 下载一块附件，返回 Base64、下一块位置和完成标志 |
+
+附件工具不读写 MCP 服务器上的本地文件。上传完成不会自动提交或审核单据。
+使用方式、字段映射和失败恢复见 [单据附件示例](./examples/bill-attachments.md)。
 
 ## 使用示例
 
@@ -456,6 +517,16 @@ kingdee-mcp 提供两层能力：
 - [PyPI 包页面](https://pypi.org/project/kingdee-mcp/)
 - [MCP 协议文档](https://modelcontextprotocol.io/)
 - [金蝶云星空官网](https://www.kingdee.com/)
+
+## 贡献者致谢
+
+感谢为本项目贡献代码的开发者：
+
+| 贡献者 | 贡献内容 |
+| --- | --- |
+| [@chncaesar](https://github.com/chncaesar) (Jiachuan Zhu) | `kingdee_query_receipts` 收款单查询（AR_Receivable）、`kingdee_query_outsource_orders` 委外加工订单查询（SUB_SubReqOrder）——含真实账套实测字段校正与单元测试 |
+
+欢迎提交 Issue 和 Pull Request。新增单据查询工具建议附带 `FORM_CATALOG` 条目、常用过滤示例与 mock 测试。
 
 ## 联系方式
 

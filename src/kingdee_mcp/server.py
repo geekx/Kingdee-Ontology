@@ -7,8 +7,11 @@ Harness 层：操作链约束（harness/）、反馈循环、结构化退出条�
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -27,7 +30,7 @@ load_env_file()
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts.base import UserMessage
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ─────────────────────────────────────────────
 # 使用日志模块（改进反馈层）
@@ -338,6 +341,9 @@ KNOWN_ERROR_PATTERNS: List[tuple[str, str, str]] = [
     ("Bad Gateway","同上，金蝶服务器不支持 HTTP/2",                   "同上"),
     ("会话",       "Session 过期或未登录",                            "调用 _login() 重新登录"),
     ("session",    "Session 过期（英文原文）",                         "调用 _login() 重新登录"),
+    ("ctx == null", "Session 过期（金蝶官方标志：ctx==null=未登录或会话失效）", "调用 _login() 重新登录"),
+    ("未登录",       "Session 过期/未登录",                            "调用 _login() 重新登录"),
+    ("-10001",      "登录失效错误码",                                 "调用 _login() 重新登录"),
     # 业务层（常见单据操作错误）
     ("关联数量",   "累计关联数量已达订单数量，无法下推",               "检查 FReceiveQty+FStockInQty 是否已满"),
     ("业务关闭",   "该行已业务关闭，不允许操作",                       "检查 FBusinessClose 状态或联系管理员反关闭"),
@@ -355,6 +361,50 @@ KNOWN_ERROR_PATTERNS: List[tuple[str, str, str]] = [
     ("非草稿",     "单据非草稿状态，不允许 Submit",                   "确认单据状态后再决定下一步"),
     ("基础资料",   "外键引用不存在 (物料/客户/供应商/部门)",          "用 kingdee_query_materials / kingdee_query_partners 验证 FNumber"),
 ]
+
+
+def _is_session_expired(resp: "httpx.Response") -> bool:
+    """判断金蝶 WebAPI 响应是否表示会话过期/未登录，需要重新登录后重试。
+
+    金蝶官方认定的会话失效标志（vip.kingdee.com 二开案例：``ctx == null`` =
+    用户未登录或会话已失效）：
+      - HTTP 401
+      - 响应体含 ``ctx == null``（官方原生表达，最可靠）
+      - 响应体含 ``未登录``
+      - 错误码 ``-10001``（登录失效）
+
+    关键约束：必须要求响应本身「是失败响应」才判过期。否则 200 成功响应里
+    若业务字段恰好带 ``session`` 字样（如某些表单字段名），会被误判为过期并触发
+    重发——对 Save/Submit/Audit 等写操作意味着重复提交，是真实风险。
+
+    2026-08-09 修复（issue #7）：原逻辑只认 ``"会话"`` / ``"session"`` 字样，
+    当金蝶返回官方的 ``ctx == null`` / ``未登录`` / ``-10001`` 时不会重登，
+    复现用户原报的 ``ctx == null`` 症状；且 200 成功响应里碰巧带 session 字样会
+    触发重发（写操作重复提交）。本函数一次性补齐上述官方标志并约束失败响应。
+    """
+    # 1) 显式未授权
+    if resp.status_code == 401:
+        return True
+    # 2) 仅当响应本身是失败响应时才继续判定，避免成功响应误判
+    body = resp.text or ""
+    low = body.lower()
+    is_failed = (
+        resp.status_code != 200
+        or '"result":false' in low
+        or '"issuccess":false' in low
+        or "-10001" in low
+    )
+    if not is_failed:
+        return False
+    # 3) 失败响应里出现任一过期标志
+    return (
+        "ctx == null" in low
+        or "未登录" in body
+        or "session" in low
+        or "会话" in body
+        or "-10001" in low
+    )
+
 
 # next-action 元数据：与 KNOWN_ERROR_PATTERNS 平行，命中 pattern 时给出建议工具
 # 不并入 tuple 是为了保持 add_known_pattern() 三参公共签名向后兼容
@@ -474,6 +524,113 @@ def _match_known_pattern(message: str) -> Optional[dict]:
     return None
 
 
+# ─────────────────────────────────────────────
+# 字段名中文对照（高频基础字段）
+#
+# 为什么需要：报错的原始信息里只有英文字段名（FCustId / FMaterialId…），
+# 新手根本看不懂「FCustId」是什么。这一层把高频字段翻成中文，
+# 让错误信息直接说人话。表内实际字段仍以 kingdee_get_fields 为准。
+# ─────────────────────────────────────────────
+FIELD_LABELS: dict[str, str] = {
+    # 客户 / 供应商
+    "FCustId": "客户", "FCUSTID": "客户", "FCustomerId": "客户",
+    "FSupplierId": "供应商", "FSupplierId.FNumber": "供应商编码",
+    # 物料 / 单位
+    "FMaterialId": "物料", "FMaterialId.FNumber": "物料编码",
+    "FUnitID": "单位", "FUnitId": "单位", "FUnitID.FName": "单位名称",
+    # 组织 / 部门
+    "FSaleOrgId": "销售组织", "FSalesOrgId": "销售组织",
+    "FPurchaseOrgId": "采购组织", "FDeptId": "部门",
+    "FPurchaseDeptId": "采购部门", "FSaleDeptId": "销售部门",
+    "FStockOrgId": "库存组织", "FManufactureOrgId": "生产组织",
+    # 金额 / 数量 / 单价
+    "FQty": "数量", "FPrice": "单价", "FTaxPrice": "含税单价",
+    "FAmount": "金额", "FTaxAmount": "含税金额",
+    "FAllAmount": "价税合计", "FAuxPrice": "辅助单价",
+    "FExchangeRate": "汇率", "FFCurrencyId": "结算币别",
+    "FSettleCurrId": "结算币别", "FPayCurrencyId": "付款币别",
+    # 日期
+    "FDate": "单据日期", "FCreateDate": "创建日期",
+    "FPlanStartDate": "计划开工日期", "FPlanFinishDate": "计划完工日期",
+    "FDeliveryDate": "交货日期", "FFinishDate": "完工日期",
+    # 单据标识
+    "FBillNo": "单据编号", "FID": "内码", "FNumber": "编码",
+    "FDocumentStatus": "单据状态", "FBillTypeID": "单据类型",
+    # 库存
+    "FStockId": "仓库", "FStockName": "仓库名称",
+    "FRealQty": "实际数量", "FSourceQty": "来源数量",
+}
+
+
+# 字段名替换用的编译正则：一次扫描完成，且长名优先。
+#
+# 为什么不用逐个 str.replace：旧实现按长度倒序逐个替换，先替换长名、
+# 后替换短名，短名会命中长名替换后残留在括号里的文本，于是
+#   "FMaterialId.FNumber" → "物料编码(物料(FMaterialId).编码(FNumber))"
+# 这种嵌套垃圾。单次扫描 + 长名优先可根治。
+#
+# wrapped 分支识别「中文(字段名)」这种已翻译形态并原样保留，
+# 使 _humanize_error_message 具备幂等性（重复调用不会二次包装）。
+_FIELD_LABELS_RE = re.compile(
+    "(?P<wrapped>"
+    + "|".join(
+        re.escape(f"{zh}({en})")
+        for en, zh in sorted(
+            FIELD_LABELS.items(), key=lambda kv: len(kv[1]) + len(kv[0]), reverse=True
+        )
+    )
+    + ")|(?P<bare>"
+    + "|".join(re.escape(en) for en in sorted(FIELD_LABELS, key=len, reverse=True))
+    + ")"
+)
+
+
+def _zh_field(field_name: str) -> str:
+    """把英文字段名翻成中文说明（找不到就原样返回）。"""
+    if not field_name:
+        return ""
+    if field_name in FIELD_LABELS:
+        return FIELD_LABELS[field_name]
+    # 处理带 .FNumber / .FName 后缀的写法
+    if "." in field_name:
+        base, suffix = field_name.split(".", 1)
+        if base in FIELD_LABELS:
+            tail = {"FNumber": "编码", "FName": "名称", "FId": "内码"}.get(suffix, suffix)
+            return f"{FIELD_LABELS[base]}{tail}"
+    # 去掉 F 前缀做一次宽松匹配（FOldQty → 数量）
+    stripped = field_name[1:] if field_name.startswith("F") else field_name
+    for k, v in FIELD_LABELS.items():
+        if k.lower() == stripped.lower():
+            return v
+    return ""
+
+
+def _humanize_error_message(message: str, field_name: str = "") -> str:
+    """把金蝶原始错误消息改写成中文人话。
+
+    做法：把消息里出现的英文字段名替换成「中文名(字段名)」，
+    并在有对应字段时追加一句建议。原始消息保留在 raw_message 里。
+
+    幂等：已翻译的「中文(字段名)」片段会原样保留，重复调用不会二次包装。
+    """
+    if not message:
+        return message
+
+    def _replace(m: re.Match) -> str:
+        if m.group("wrapped"):
+            return m.group(0)
+        en = m.group("bare")
+        return f"{FIELD_LABELS[en]}({en})"
+
+    text = _FIELD_LABELS_RE.sub(_replace, message)
+    # 消息里没出现词典里的字段，但错误本身指定了字段
+    if field_name and field_name not in text:
+        zh = _zh_field(field_name)
+        if zh:
+            text = f"{text}（涉及字段：{zh}({field_name})）"
+    return text
+
+
 def _parse_kingdee_errors(result: Any) -> list:
     """从 Kingdee API 响应中提取业务错误（反馈层核心函数）。
 
@@ -492,39 +649,99 @@ def _parse_kingdee_errors(result: Any) -> list:
                 if key in seen:
                     continue
                 seen.add(key)
+                raw_msg = msg
+                field_name = err.get("FieldName", "")
                 errors.append({
-                    "message": msg,
+                    "message": _humanize_error_message(raw_msg, field_name),
+                    "raw_message": raw_msg,
                     "detail": err.get("Dsc", ""),
-                    "field": err.get("FieldName", ""),
-                    "matched": _match_known_pattern(msg),
+                    "field": field_name,
+                    "field_zh": _zh_field(field_name),
+                    "matched": _match_known_pattern(raw_msg),
                 })
         # Push 操作特有的 ConvertResponseStatus —— 逐行也走 pattern 匹配
         conv = rs.get("ConvertResponseStatus", [])
         if conv:
             for i, c in enumerate(conv):
                 if not c.get("IsSuccess", True):
-                    msg = c.get("Message", "转换失败")
-                    key = (i, msg)
+                    raw_msg = c.get("Message", "转换失败")
+                    key = (i, raw_msg)
                     if key in seen:
                         continue
                     seen.add(key)
                     errors.append({
                         "type": "convert",
                         "row": i,
-                        "message": msg,
+                        "message": _humanize_error_message(raw_msg),
+                        "raw_message": raw_msg,
                         "detail": c.get("Description", ""),
-                        "matched": _match_known_pattern(msg),
+                        "matched": _match_known_pattern(raw_msg),
                     })
     except Exception:
         pass
     return errors
 
 
-def _result_status(result: Any, op: str, link_check: Optional[dict] = None) -> dict:
+def _reconcile_batch(status: Any, requested_ids: Any) -> dict:
+    """核对「提交了几个」与「金蝶确认成功了几个」，把静默丢单变成显式失败。
+
+    背景（issue #8）：批量 Submit/Audit/Unaudit/Delete 时，金蝶可能只处理了一部分
+    单据却仍返回 ``IsSuccess: true``，``SuccessEntitys`` 里只有寥寥几条。调用方只看
+    ``success`` 字段就会误以为全部生效 —— 这类"假成功"比直接报错危险得多。
+
+    Args:
+        status: 金蝶返回的 ResponseStatus 字典。
+        requested_ids: 本次请求实际提交的 ID（列表或逗号拼接字符串）。
+
+    Returns:
+        dict: 含 requested_count / succeeded_count / missing_ids 的对账结果；
+              无法对账（缺少任一侧数据）时返回空 dict，调用方按原逻辑处理。
+    """
+    if isinstance(requested_ids, str):
+        requested = [x.strip() for x in requested_ids.split(",") if x.strip()]
+    elif isinstance(requested_ids, (list, tuple, set)):
+        requested = [str(x).strip() for x in requested_ids if str(x).strip()]
+    else:
+        return {}
+
+    if not requested or not isinstance(status, dict):
+        return {}
+
+    entities = status.get("SuccessEntitys")
+    if not isinstance(entities, list):
+        return {}
+
+    succeeded = {
+        str(e.get("Id")).strip()
+        for e in entities
+        if isinstance(e, dict) and e.get("Id") is not None
+    }
+    missing = [rid for rid in requested if rid not in succeeded]
+
+    out = {
+        "requested_count": len(requested),
+        "succeeded_count": len(requested) - len(missing),
+    }
+    if missing:
+        out["missing_ids"] = missing
+        out["tip"] = (
+            f"提交了 {len(requested)} 张单据，金蝶只确认成功 {len(requested) - len(missing)} 张，"
+            f"其余 {len(missing)} 张未生效（见 missing_ids）。请逐张核对后重试，不要当作已完成。"
+        )
+    return out
+
+
+def _result_status(result: Any, op: str, link_check: Optional[dict] = None,
+                   requested_ids: Any = None) -> dict:
     """构建结构化操作结果（约束层 + 反馈层）。
 
-    link_check：push 类操作可带上下推链接的校验结果（审计 L-1），
-    让调用方知道这条转换关系是否已登记、是否被标记存疑。
+    Args:
+        result: 金蝶 WebAPI 原始返回。
+        op: 操作名（submit/audit/...），用于查生命周期下一步。
+        link_check: push 类操作可带上下推链接的校验结果（审计 L-1），
+            让调用方知道这条转换关系是否已登记、是否被标记存疑。
+        requested_ids: 可选，本次请求提交的单据 ID。传入后会做批量对账，
+            发现金蝶少处理了单据时把 success 置为 False（见 issue #8）。
     """
     rs = result.get("Result", result) if isinstance(result, dict) else {}
     status = rs.get("ResponseStatus", {})
@@ -566,6 +783,16 @@ def _result_status(result: Any, op: str, link_check: Optional[dict] = None) -> d
             out["link_warning"] = link_check["hint"]
         elif link_check.get("warning"):
             out["link_warning"] = link_check["warning"]
+
+    # issue #8：批量操作对账 —— 金蝶少处理了单据却报 IsSuccess=true 时，必须显式失败
+    if requested_ids is not None:
+        recon = _reconcile_batch(status, requested_ids)
+        if recon:
+            out.update(recon)
+            if recon.get("missing_ids"):
+                ok = False
+                out["success"] = False
+
     if ok:
         # next_action 始终返回（None 表示流程完成）
         out["next_action"] = lifecycle.get("next_action")
@@ -739,6 +966,8 @@ _EP = {
     "unaudit": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.UnAudit.common.kdsvc",
     "delete":  "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Delete.common.kdsvc",
     "push":    "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Push.common.kdsvc",
+    "attachment_upload": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.AttachmentUpLoad.common.kdsvc",
+    "attachment_download": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.AttachmentDownLoad.common.kdsvc",
     # 标准动作执行（撤销/作废/整单关闭/反关闭/禁用/反禁用等）：
     # ⚠️ 端点名：服务端真正认的是 ExecuteOperation（2026-08-07 QA 严过关真机实测；
     #    旧拼写 ExcuteOperation 虽返回 HTTP200 但实际空引用，勿再用）。
@@ -792,8 +1021,9 @@ class MetadataValidator:
     """
     _cache: dict[str, "MetadataValidator"] = {}
 
-    def __init__(self, metadata: dict):
+    def __init__(self, metadata: dict, form_id: str = ""):
         self.metadata = metadata
+        self.form_id = form_id or ""
         self.fields: dict[str, FieldDef] = {}
         self._parse_fields()
 
@@ -977,19 +1207,62 @@ class MetadataValidator:
                 best_d = d
         return best
 
-    def validate_and_fix(self, payload: dict) -> tuple[dict, List[dict]]:
+    def _caption_of(self, field_name: str) -> str:
+        """取字段的中文说明（来自元数据 Caption），取不到返回空串。
+
+        支持带路径的写法，让分录内字段也能拿到中文名：
+          - 顶层字段：FSaleOrgId
+          - FBillHead 下：FBillHead.FDate
+          - 分录内字段：FSaleOrderEntry[0].FMaterialId
+        """
+        if not field_name:
+            return ""
+        d = self.fields.get(field_name)
+        if d is not None:
+            return d.caption or ""
+        if "." not in field_name:
+            return ""
+        base, _, child = field_name.partition(".")
+        # 分录内字段：Entry[行号].字段
+        entry_def = self.fields.get(base.split("[", 1)[0])
+        if entry_def is not None and entry_def.is_entry:
+            for c in entry_def.children:
+                if c.name == child:
+                    return c.caption or ""
+        # FBillHead.字段 → 顶层字段（FBillHead 的字段在解析时已平铺到顶层）
+        d = self.fields.get(child)
+        return (d.caption or "") if d is not None else ""
+
+    def validate_and_fix(self, payload: dict) -> tuple[dict, List[dict], List[dict]]:
         """
         验证并修正请求参数
 
         Returns:
-            (修正后的payload, 修正列表 [{"from": "...", "to": "...", "location": "..."}])
+            (修正后的payload, 修正列表, 未知字段列表)
+            - 修正列表 [{"from", "to", "from_zh", "to_zh", "location"}]
+              from_zh/to_zh 是字段的中文说明（取不到时为空串）
+            - 未知字段列表 [{"field", "location", "suggestion"}]
+              这些字段既不是有效字段、也没能修正 —— 静默丢弃才是最坑的，
+              必须报出来，并给出「用 kingdee_get_fields 查真实字段名」的建议。
         """
         import copy
         fixed_payload = copy.deepcopy(payload)
         fixes = []
+        unknown = []
 
         # 顶层有效字段候选集（不含分录实体名），用于纠错匹配
         head_fields = [k for k, d in self.fields.items() if not d.is_entry]
+
+        def _record(frm: str, to: str, location: str) -> None:
+            fixes.append({
+                "from": frm,
+                "to": to,
+                # from 侧往往是元数据里不存在的错拼名（如 FSalesOrgId），
+                # 取不到 Caption 时回退到静态字段词典，至少还能给出中文含义
+                "from_zh": self._caption_of(frm) or _zh_field(frm),
+                "to_zh": self._caption_of(to) or _zh_field(to),
+                "location": location,
+            })
 
         # 1. 修正顶层字段（不含 FBillHead / 已知跳过项 / 有效字段）
         for key in list(fixed_payload.keys()):
@@ -998,7 +1271,16 @@ class MetadataValidator:
             corrected = self.find_similar_field(key, head_fields)
             if corrected:
                 fixed_payload[corrected] = fixed_payload.pop(key)
-                fixes.append({"from": key, "to": corrected, "location": "顶层"})
+                _record(key, corrected, "顶层")
+            else:
+                unknown.append({
+                    "field": key,
+                    "location": "顶层",
+                    "suggestion": (
+                        f"「{key}」不是 {self.form_id} 的有效字段，且未能自动匹配。"
+                        f"请调用 kingdee_get_fields 查该单据的真实字段名后重试。"
+                    ),
+                })
 
         # 2. 修正 FBillHead 下的字段
         if "FBillHead" in fixed_payload and isinstance(fixed_payload["FBillHead"], dict):
@@ -1009,7 +1291,16 @@ class MetadataValidator:
                 corrected = self.find_similar_field(key, head_fields)
                 if corrected:
                     bill_head[corrected] = bill_head.pop(key)
-                    fixes.append({"from": f"FBillHead.{key}", "to": f"FBillHead.{corrected}", "location": "FBillHead"})
+                    _record(f"FBillHead.{key}", f"FBillHead.{corrected}", "FBillHead")
+                else:
+                    unknown.append({
+                        "field": f"FBillHead.{key}",
+                        "location": "FBillHead",
+                        "suggestion": (
+                            f"「{key}」不是 {self.form_id} 的有效字段，且未能自动匹配。"
+                            f"请调用 kingdee_get_fields 查该单据的真实字段名后重试。"
+                        ),
+                    })
 
         # 3. 修正分录内的字段（候选集限定为该分录子字段，避免误匹配到顶层字段）
         for entry_name, entry_def in self.fields.items():
@@ -1024,9 +1315,18 @@ class MetadataValidator:
                                 corrected = self.find_similar_field(key, list(valid_entry_fields))
                                 if corrected:
                                     entry[corrected] = entry.pop(key)
-                                    fixes.append({"from": f"{entry_name}[{idx}].{key}", "to": f"{entry_name}[{idx}].{corrected}", "location": entry_name})
+                                    _record(f"{entry_name}[{idx}].{key}", f"{entry_name}[{idx}].{corrected}", entry_name)
+                                else:
+                                    unknown.append({
+                                        "field": f"{entry_name}[{idx}].{key}",
+                                        "location": entry_name,
+                                        "suggestion": (
+                                            f"「{key}」不是 {entry_name} 的有效字段，且未能自动匹配。"
+                                            f"请调用 kingdee_get_fields 查该单据的真实字段名后重试。"
+                                        ),
+                                    })
 
-        return fixed_payload, fixes
+        return fixed_payload, fixes, unknown
 
 
 def _metadata_cache_dir() -> str:
@@ -1128,7 +1428,7 @@ async def _get_metadata_validator(form_id: str, force: bool = False) -> Optional
         return None
 
     # 创建验证器并缓存
-    validator = MetadataValidator(metadata)
+    validator = MetadataValidator(metadata, form_id=form_id)
     MetadataValidator.set(form_id, validator)
     return validator
 
@@ -1584,11 +1884,27 @@ FORM_CATALOG = {
     },
 
     "AR_Receivable": {
-        "name": "应收单",
-        "alias": ["应收", "应收单", "应收账款", "销售发票"],
-        "desc": "记录企业应收客户的款项，由销售出库单下推或手工创建。",
-        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FAmount,FCloseStatus",
+        "name": "应收单/收款单",
+        "alias": ["应收", "应收单", "收款单", "回款", "应收账款", "营收", "现金回款", "票据回款"],
+        "desc": "记录客户应收账款，包含应收金额、已核销金额和核销状态。"
+                "是营收、回款、应收余额等财务指标的核心数据来源。"
+                "注：不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+                "先调用 kingdee_get_fields 确认可用字段。",
+        "fields": (
+            "FID,FBillNo,FDATE,FDocumentStatus,"
+            "FCUSTOMERID.FName,FCUSTOMERID.FNumber,"
+            "FALLAMOUNTFOR,FNOTAXAMOUNTFOR,FRELATEHADPAYAMOUNT,"
+            "FWRITTENOFFSTATUS,FOPENSTATUS,FENDDATE_H,"
+            "FSETTLEORGID.FName,FISINIT"
+        ),
         "db_tables": ("T_AR_RECEIVABLE", "T_AR_RECEIVABLEENTRY"),
+        "common_filters": [
+            "FDocumentStatus='C'                           # 已审核",
+            "FDATE>='2026-01-01' and FDATE<='2026-01-31'  # 指定月份",
+            "FWRITTENOFFSTATUS='A'                         # 未核销",
+            "FOPENSTATUS='A'                               # 未关闭",
+            "FISINIT=false                                 # 业务单据（排除期初）",
+        ],
     },
 
     # ══════════════════════════════════════════════════════
@@ -1633,6 +1949,37 @@ FORM_CATALOG = {
             "毛利闭环": "同一笔销售：SUM(收款.F_TRNV_Amount_bh8 WHERE F_TRNV_SourceBillNo_0ev=SO号) - SUM(付款.F_TRNV_Amount_bh8 WHERE F_TRNV_SONo=SO号)",
             "字段命名": "金蝶 BOS WebAPI 字段名混合大小写（如 F_TRNV_Amount_bh8），不是全大写",
         },
+    },
+
+    # ══════════════════════════════════════════════════════
+    # 委外加工
+    # ══════════════════════════════════════════════════════
+
+    "SUB_SubReqOrder": {
+        "name": "委外加工订单",
+        "alias": ["委外订单", "委外加工", "外协", "CP委外", "WIP", "在制", "委外在制"],
+        "desc": (
+            "外协生产任务单据，记录 CP 测试、封装、FT 成品测试等工序委托加工情况。"
+            "FNoStockInQty 为当前未入库在制量，FPlanFinishDate 为计划完工日。"
+            "FStatus 枚举：1=开工，3=完工，6=结案，7=结算。"
+            "注：F_XTR_Qty 为晶圆辅单位片数（自定义扩展字段，非金蝶标准字段）。"
+        ),
+        "fields": (
+            "FID,FBillNo,FDate,FDocumentStatus,FStatus,"
+            "FSupplierId.FName,FSupplierId.FNumber,"
+            "FTreeEntity_FEntryID,"
+            "FMaterialId.FNumber,FMaterialId.FName,FMaterialId.FSpecification,"
+            "FQty,FStockInQty,FNoStockInQty,"
+            "FPlanFinishDate,FUnitId.FName,"
+            "FLot.FNumber,FPurOrderNo"
+        ),
+        "db_tables": ("T_SUB_REQORDER", "T_SUB_REQORDERENTRY"),
+        "common_filters": [
+            "FDocumentStatus='C' and FStatus not in ('6','7')   # 已审核未结案（在制）",
+            "FPlanFinishDate<GETDATE() and FStatus='1'           # 逾期开工中",
+            "FStatus='3'                                         # 已完工待入库",
+            "FSupplierId.FName like '%华力%'                     # 指定供应商",
+        ],
     },
 
     # ══════════════════════════════════════════════════════
@@ -1998,6 +2345,47 @@ def _check_push_link(source_form: str, target_form: str) -> dict:
     return out
 
 
+def _normalize_ids(ids: Any, ep_key: str = "") -> str:
+    """把 Submit/Audit/Unaudit/Delete 的 Ids 规整成金蝶 WebAPI 要求的字符串形式。
+
+    金蝶云星空 Submit/Audit/Unaudit/Delete 接口的 data.Ids 必须是字符串：
+    单个 ``"100"``，多个用英文逗号拼接 ``"100,101,102"``（与 CancelAssign /
+    ExecuteOperation 同一约定，见本文件 ``business["Ids"] = ",".join(...)``）。
+
+    历史坑（issue #8）：旧实现遇到 list 时取 ``ids[0]``，把其余 ID **静默丢弃**，
+    接口仍返回 ``success: true``，调用方完全无感 —— 用户批量反审核 11 张单据，
+    实际只有 1 张生效，另外 10 张原封不动。这类"假成功"比直接报错危险得多。
+
+    Args:
+        ids: 单个 ID（str/int）或 ID 列表/元组。
+        ep_key: 端点名，仅用于报错信息。
+
+    Returns:
+        str: 逗号拼接后的 ID 字符串。
+
+    Raises:
+        ValueError: ID 为空（空列表 / 空字符串 / 全是空白），属调用方参数错误，
+            必须显式失败，不能悄悄发一个空 Ids 上去。
+    """
+    if isinstance(ids, (list, tuple, set)):
+        parts = [str(x).strip() for x in ids]
+    else:
+        parts = [str(ids).strip()]
+
+    parts = [p for p in parts if p]
+    if not parts:
+        raise ValueError(f"{ep_key or '该操作'} 缺少有效的单据 ID（Ids 为空）")
+
+    # 去重但保持原顺序：金蝶对重复 ID 会报错，且调用方通常无意重复提交
+    seen, uniq = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+
+    return ",".join(uniq)
+
+
 async def _post_raw(ep_key: str, form_id: str, model: dict,
                      need_update_fields: Optional[List[str]] = None,
                      need_return_fields: Optional[List[str]] = None,
@@ -2054,10 +2442,10 @@ async def _post_raw(ep_key: str, form_id: str, model: dict,
             if _STRICT_LINKS and _chk.get("status") == "unregistered":
                 raise RuntimeError(
                     "[KINGDEE_STRICT_LINKS] 拒绝未登记的下推关系。" + _chk["hint"])
-        # 💡 REMEMBER: Submit/Audit/Unaudiot/Delete 的 Ids 必须是单个字符串 {"Ids":"100"}，不是数组
+        # 💡 REMEMBER: Submit/Audit/Unaudit/Delete 的 Ids 必须是字符串，多个用英文逗号拼接
+        #    {"Ids":"100"} 或 {"Ids":"100,101,102"}，不能直接传数组。
         if ep_key in ("submit", "audit", "unaudit", "delete") and "Ids" in data_obj:
-            ids = data_obj["Ids"]
-            data_obj["Ids"] = ids[0] if isinstance(ids, (list, tuple)) else ids
+            data_obj["Ids"] = _normalize_ids(data_obj["Ids"], ep_key=ep_key)
         body_obj = {"formid": form_id, "data": json.dumps(data_obj, ensure_ascii=False)}
     else:
         data_obj = {"Model": model}
@@ -2549,6 +2937,124 @@ def _query_payload(form_id: str, field_keys: str, filter_string: str,
 
 
 # ─────────────────────────────────────────────
+# 「无 FID 视图」基础资料兼容层（closes #28）
+# ─────────────────────────────────────────────
+# 现象：查 BD_Currency / BD_AccountBook / BD_VOUCHERGROUP / BD_RateType 等基础资料时，
+#       服务端返回「列名 'FID' 无效。」，即使 FieldKeys 里没写 FID 也报。
+# 根因：这些基础资料的查询视图（如 V_BD_CURRENCY）没有 FID 列（主键是 FCURRENCYID 之类），
+#       而 ExecuteBillQuery 会把 FieldKeys / **OrderString** 原样拼进 SQL。
+#       QueryInput.order_string 默认值是 "FID DESC" —— 用户没传排序时它照样注入 FID，
+#       所以「不含 FID 的 field_keys 仍然报错」。这是本包的默认值问题，不是金蝶硬限制。
+# 策略：① 已知名单先降级（不发 FID）；② 未知表单撞上该错误则自动去 FID 重试一次，
+#       并把它记进运行时名单，同一进程后续直接走降级路径；③ 仍失败则给人话提示。
+
+NO_FID_FORMS: frozenset = frozenset({
+    "BD_CURRENCY",        # 币别
+    "BD_ACCOUNTBOOK",     # 账簿
+    "BD_VOUCHERGROUP",    # 凭证字
+    "BD_RATETYPE",        # 汇率类型
+    "BD_PERIOD",          # 会计期间
+    "BD_ACCOUNTTABLE",    # 科目表
+    "BD_SETTLETYPE",      # 结算方式
+    "BD_TAXRATE",         # 税率（部分版本视图无 FID）
+})
+
+# 运行时学到的无 FID 表单（撞过一次错就记住，避免每次都白跑一趟）
+_LEARNED_NO_FID_FORMS: set = set()
+
+_NO_FID_ERR_PATTERNS = ("列名 'FID' 无效", "列名\"FID\"无效", "invalid column name 'fid'")
+
+
+def _form_lacks_fid(form_id: str) -> bool:
+    key = (form_id or "").strip().upper()
+    return key in NO_FID_FORMS or key in _LEARNED_NO_FID_FORMS
+
+
+def _strip_fid(field_keys: str, order_string: str) -> tuple:
+    """把 FieldKeys / OrderString 里的裸 FID 去掉。
+
+    只去裸 FID，`FSupplierId.FNumber`、`FIDX` 这类带前后缀的字段保持原样。
+    OrderString 去空后回退 FNumber ASC（基础资料一定有 FNumber），空排序部分环境会报错。
+    """
+    fk = ",".join(
+        f for f in (p.strip() for p in (field_keys or "").split(","))
+        if f and f.upper() != "FID"
+    )
+    od_parts = []
+    for seg in (order_string or "").split(","):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if seg.split()[0].upper() == "FID":
+            continue
+        od_parts.append(seg)
+    od = ", ".join(od_parts)
+    return (fk or "FNumber,FName"), (od or "FNumber ASC")
+
+
+def _is_no_fid_error(result: Any) -> bool:
+    """判断查询响应是不是「列名 FID 无效」这一类错误。
+
+    金蝶查询接口出错时既可能返回 dict（Result.ResponseStatus.Errors），
+    也可能返回 list 包一层，所以文本兜底匹配，避免结构变动漏判。
+    但正常查询返回的是几十行业务数据，全量序列化去搜字符串太浪费 ——
+    先用 `_looks_like_error` 便宜地筛一遍，只有像错误的响应才进文本匹配。
+    """
+    if not _looks_like_error(result):
+        return False
+    try:
+        blob = json.dumps(result, ensure_ascii=False).lower()
+    except Exception:
+        blob = str(result).lower()
+    return any(p.lower() in blob for p in _NO_FID_ERR_PATTERNS)
+
+
+def _looks_like_error(result: Any) -> bool:
+    """便宜的预筛：正常查询返回行数组，出错才带 ResponseStatus / Errors。"""
+    if isinstance(result, dict):
+        rs = result.get("Result", result)
+        if isinstance(rs, dict):
+            return bool(rs.get("ResponseStatus") or rs.get("Errors")) \
+                or not rs.get("IsSuccess", True)
+        return False
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        # 金蝶偶尔把错误包成 [{"Result": {"ResponseStatus": ...}}]
+        return any(k in result[0] for k in ("Result", "ResponseStatus", "Errors"))
+    return False
+
+
+async def _post_query(form_id: str, field_keys: str, filter_string: str,
+                      order_string: str, start_row: int, limit: int) -> tuple:
+    """查询单据/基础资料，自动兼容「无 FID 视图」表单。
+
+    Returns:
+        tuple: (result, notice)，notice 为降级说明（无降级时为空串）
+    """
+    notice = ""
+    fk, od = field_keys, order_string
+    if _form_lacks_fid(form_id):
+        fk, od = _strip_fid(field_keys, order_string)
+        notice = f"{form_id} 的查询视图没有 FID 列，已自动去掉 FID 字段与 FID 排序。"
+
+    result = await _post("query", _query_payload(form_id, fk, filter_string,
+                                                 od, start_row, limit))
+
+    # 未知表单撞上该错误 → 学习 + 去 FID 重试一次
+    if not notice and _is_no_fid_error(result):
+        _LEARNED_NO_FID_FORMS.add((form_id or "").strip().upper())
+        fk, od = _strip_fid(field_keys, order_string)
+        result = await _post("query", _query_payload(form_id, fk, filter_string,
+                                                     od, start_row, limit))
+        notice = f"{form_id} 的查询视图没有 FID 列，已自动去掉 FID 后重试。"
+
+    if _is_no_fid_error(result):
+        notice = (f"{form_id} 该基础资料不支持自动查询（查询视图缺主键列）。"
+                  f"请在金蝶界面查到它的 FNumber 后手动填入，"
+                  f"或用 kingdee_get_fields 确认可用字段。")
+    return result, notice
+
+
+# ─────────────────────────────────────────────
 # Pydantic 输入模型
 # ─────────────────────────────────────────────
 
@@ -2584,6 +3090,223 @@ class BillIdsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     form_id: str = Field(..., description="单据类型标识")
     bill_ids: List[str] = Field(..., description="单据内码 FID 列表", min_length=1)
+
+
+# A per-call MCP limit, not a Kingdee server limit. Larger files use chunks.
+_ATTACHMENT_CHUNK_BYTES = 4 * 1024 * 1024
+_ATTACHMENT_BASE64_LENGTH = 4 * ((_ATTACHMENT_CHUNK_BYTES + 2) // 3)
+
+
+class AttachmentUploadInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., min_length=1, description="单据表单标识，例如 PUR_PurchaseOrder")
+    bill_id: str = Field(..., min_length=1, description="已存在单据的内码，对应 InterId")
+    bill_no: str = Field(..., min_length=1, description="单据编号，对应 BillNO")
+    file_name: str = Field(..., min_length=1, description="含扩展名的文件名，不是本地文件路径")
+    send_byte: str = Field(
+        ..., max_length=_ATTACHMENT_BASE64_LENGTH,
+        description="当前分块的标准 Base64 字符串，对应 SendByte；解码后最多 4 MiB，不含 data: 前缀",
+    )
+    is_last: bool = Field(default=True, strict=True, description="是否最后一块；单次上传为 true")
+    file_id: Optional[str] = Field(default=None, min_length=1, description="续传必填首次上传返回的 FileId；首次不填")
+    entry_key: Optional[str] = Field(default=None, min_length=1, description="分录附件的单据体标识，对应 Entrykey")
+    entry_id: Optional[str] = Field(default=None, min_length=1, description="分录内码，对应 EntryinterId；表头不填或 -1")
+    alias_file_name: Optional[str] = Field(default=None, description="附件别名，对应 AliasFileName")
+
+    @field_validator("send_byte")
+    @classmethod
+    def validate_base64(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error):
+            raise ValueError("send_byte 必须是标准 Base64 字符串") from None
+        if len(decoded) > _ATTACHMENT_CHUNK_BYTES:
+            raise ValueError("单块附件不能超过 4 MiB，请分块上传")
+        return value
+
+    @model_validator(mode="after")
+    def validate_entry(self):
+        if self.entry_key:
+            if self.entry_id in (None, "-1", "0"):
+                raise ValueError("分录附件必须同时提供 entry_key 和有效 entry_id")
+        elif self.entry_id not in (None, "-1"):
+            raise ValueError("指定分录 entry_id 时必须提供 entry_key")
+        return self
+
+
+class AttachmentDownloadInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    file_id: str = Field(..., min_length=1, description="上传返回的 FileId，不是附件内码 SuccessEntitys.Id")
+    start_index: int = Field(default=0, ge=0, strict=True, description="首次为 0；续传使用上次响应的 StartIndex")
+
+
+def _attachment_body(result: Any) -> dict:
+    body = result.get("Result", result) if isinstance(result, dict) else None
+    if not isinstance(body, dict) or not isinstance(body.get("ResponseStatus"), dict):
+        raise ValueError("附件接口响应缺少 ResponseStatus，无法确认操作结果")
+    if type(body["ResponseStatus"].get("IsSuccess")) is not bool:
+        raise ValueError("附件接口响应缺少有效 IsSuccess，无法确认操作结果")
+    return body
+
+
+async def _post_attachment(ep_key: str, payload: dict) -> Any:
+    """V6.0 单个 data 字符串参数；不使用 Save 的 formid/Model 包装。"""
+    global _session_id
+    started = time.perf_counter()
+    success = False
+    error_type = ""
+    try:
+        timeout_seconds = float(os.getenv("KINGDEE_ATTACHMENT_TIMEOUT", "120"))
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("KINGDEE_ATTACHMENT_TIMEOUT 必须为有限正数（秒）")
+        if not _session_id:
+            async with _get_session_lock():
+                if not _session_id:
+                    await _login()
+        # 💡 REMEMBER: 附件 HTTP 请求必须使用 {"data": JSON字符串}；V6.0 示例的参数数组不能直接作为 HTTP 请求体，否则服务端反序列化失败。
+        parameters = {"data": json.dumps(payload, ensure_ascii=False)}
+        # 💡 REMEMBER: 大文件最后一块触发文件服务器存储，实测耗时约 76 秒；附件传输默认等待 120 秒，连接超时仍为 30 秒。
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=30), proxy=None,
+                                    transport=httpx.AsyncHTTPTransport(http1=True)) as client:
+            for attempt in range(2):
+                session = _session_id
+                resp = await client.post(
+                    _url(ep_key), json=parameters,
+                    headers={"Cookie": f"kdservice-sessionid={session}"},
+                )
+                # Only an explicit HTTP 401 is safe to replay for uploads.
+                # Never scan attachment names/content for session-related words.
+                if resp.status_code == 401 and attempt == 0:
+                    async with _get_session_lock():
+                        if _session_id == session:
+                            await _login()
+                    continue
+                resp.raise_for_status()
+                result = _safe_json(resp)
+                success = _attachment_body(result)["ResponseStatus"]["IsSuccess"]
+                if not success:
+                    error_type = "KingdeeBusinessError"
+                return result
+    except Exception as exc:
+        error_type = type(exc).__name__
+        raise
+    finally:
+        # No file bytes, filenames, FileId, server response or exception text in logs.
+        try:
+            log_tool_usage(f"api:{ep_key}", {}, (time.perf_counter() - started) * 1000,
+                           success, error_type=error_type)
+        except Exception:
+            pass  # Logging must not hide a successful upload and encourage a duplicate.
+
+
+def _attachment_result(result: Any, op: str) -> tuple[dict, dict]:
+    body = _attachment_body(result)
+    status = body["ResponseStatus"]
+    out = {"op": op, "success": status["IsSuccess"], "response_status": status}
+    if body.get("Message"):
+        out["message"] = body["Message"]
+    if not out["success"]:
+        out["errors"] = _parse_kingdee_errors(result) or [
+            {"message": body.get("Message") or "附件操作失败，请检查单据及附件权限"}
+        ]
+        # Keep a returned FileId for manual recovery, but never auto-resume failures.
+        if body.get("FileId"):
+            out["file_id"] = body["FileId"]
+    return out, body
+
+
+def _attachment_exception(exc: Exception, op: str) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        message = f"附件接口 HTTP {exc.response.status_code}"
+    elif isinstance(exc, httpx.RequestError):
+        message = f"附件接口网络异常 ({type(exc).__name__})"
+    else:
+        message = f"附件接口调用或响应校验失败 ({type(exc).__name__})"
+    out = {"op": op, "success": False, "errors": [{"message": message}]}
+    if op == "upload_attachment":
+        out["outcome_unknown"] = True
+        out["recovery_hint"] = (
+            "无法确认当前块是否已上传；先在金蝶核对附件及 FileId，勿自动重传或重新创建附件。"
+        )
+    return _fmt(out)
+
+
+@mcp.tool(
+    name="kingdee_upload_attachment",
+    annotations={"title": "上传单据附件", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False},
+)
+async def kingdee_upload_attachment(params: AttachmentUploadInput) -> str:
+    """按 WebAPI V6.0 上传一块附件并绑定已存在的单据（表头或分录）。
+
+    直接传 Base64，不读取服务器本地文件。单块最多 4 MiB。
+    多块上传须按顺序调用，保持单据/分录/文件名一致，后续块传首次返回的 file_id，
+    只有最后一块 is_last=true。上传完成不触发单据提交或审核。
+    success=true 且 next_action=null 才表示全部上传完成；失败或结果未知时不要自动重传。
+    """
+    payload = {
+        "FileName": params.file_name, "FormId": params.form_id, "InterId": params.bill_id,
+        "BillNO": params.bill_no, "IsLast": params.is_last, "SendByte": params.send_byte,
+    }
+    for key, value in (("FileId", params.file_id), ("Entrykey", params.entry_key),
+                       ("EntryinterId", params.entry_id), ("AliasFileName", params.alias_file_name)):
+        if value is not None:
+            payload[key] = value
+    try:
+        result = await _post_attachment("attachment_upload", payload)
+        out, body = _attachment_result(result, "upload_attachment")
+        if out["success"]:
+            file_id = body.get("FileId")
+            if not isinstance(file_id, str) or not file_id.strip():
+                raise ValueError("附件上传响应缺少 FileId")
+            out.update(file_id=file_id, is_last=params.is_last,
+                       attachment_ids=[entity["Id"] for entity in body["ResponseStatus"].get("SuccessEntitys", [])
+                                       if isinstance(entity, dict) and entity.get("Id") is not None],
+                       next_action=None if params.is_last else "upload_attachment")
+            if not params.is_last:
+                out["next_action_desc"] = "按顺序上传下一块，携带 file_id，最后一块设置 is_last=true"
+        return _fmt(out)
+    except Exception as exc:
+        return _attachment_exception(exc, "upload_attachment")
+
+
+@mcp.tool(
+    name="kingdee_download_attachment",
+    annotations={"title": "下载单据附件", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False},
+)
+async def kingdee_download_attachment(params: AttachmentDownloadInput) -> str:
+    """按 WebAPI V6.0 下载一块附件，返回 Base64 file_part，不写服务器本地文件。
+
+    file_id 使用上传返回的 FileId，不是附件内码 attachment_ids。
+    首次 start_index=0；is_last=false 时用返回的 start_index 继续下载，直到 next_action=null。
+    每块分别 Base64 解码后按顺序拼接字节，不要直接拼接 Base64 字符串。
+    """
+    try:
+        result = await _post_attachment("attachment_download", {
+            "FileId": params.file_id, "StartIndex": params.start_index,
+        })
+        out, body = _attachment_result(result, "download_attachment")
+        if out["success"]:
+            is_last, start_index = body.get("IsLast"), body.get("StartIndex")
+            if type(is_last) is not bool or type(start_index) is not int or start_index < 0:
+                raise ValueError("附件下载响应缺少有效 IsLast/StartIndex")
+            if not is_last and start_index <= params.start_index:
+                raise ValueError("下载续传位置未前进，停止以避免无限循环")
+            part, file_size, file_name = body.get("FilePart"), body.get("FileSize"), body.get("FileName")
+            if not isinstance(part, str) or type(file_size) is not int or file_size < 0:
+                raise ValueError("附件下载响应缺少有效 FilePart/FileSize")
+            if not isinstance(file_name, str) or not file_name:
+                raise ValueError("附件下载响应缺少 FileName")
+            base64.b64decode(part, validate=True)
+            out.update(file_id=params.file_id, file_name=file_name, file_size=file_size,
+                       file_part=part, start_index=start_index, is_last=is_last,
+                       next_action=None if is_last else "download_attachment")
+            if not is_last:
+                out["next_action_desc"] = "使用本次返回的 start_index 下载下一块，分别解码后拼接字节"
+        return _fmt(out)
+    except Exception as exc:
+        return _attachment_exception(exc, "download_attachment")
 
 
 class PurchaseOrderProgressInput(BaseModel):
@@ -2631,6 +3354,72 @@ class InventoryQueryInput(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+class ReceiptQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(
+        default="FDocumentStatus='C'",
+        description=(
+            "过滤条件，默认只查已审核应收单。"
+            "示例："
+            "\"FDATE>='2026-01-01' and FDATE<='2026-01-31'\"（指定月份）、"
+            "\"FCUSTOMERID.FNumber='C001'\"（指定客户）、"
+            "\"FWRITTENOFFSTATUS='A'\"（未核销）、"
+            "\"FOPENSTATUS='A'\"（未关闭）"
+            "\n⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+            "先调用 kingdee_get_fields('AR_Receivable') 确认可用字段。"
+        ),
+    )
+    field_keys: str = Field(
+        default=(
+            "FID,FBillNo,FDATE,FDocumentStatus,"
+            "FCUSTOMERID.FName,FCUSTOMERID.FNumber,"
+            "FALLAMOUNTFOR,FNOTAXAMOUNTFOR,FRELATEHADPAYAMOUNT,"
+            "FWRITTENOFFSTATUS,FOPENSTATUS,FENDDATE_H,"
+            "FSETTLEORGID.FName,FISINIT"
+        ),
+        description=(
+            "返回字段，逗号分隔。"
+            "⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+            "先调用 kingdee_get_fields('AR_Receivable') 确认可用字段。"
+        ),
+    )
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class OutsourceOrderQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(
+        default="FDocumentStatus='C' and FStatus not in ('6','7')",
+        description=(
+            "过滤条件，默认查已审核且未结案/结算的委外订单（即在制中）。"
+            "示例："
+            "\"FSupplierId.FName like '%华力%'\"（指定供应商）、"
+            "\"FPlanFinishDate<='2026-08-31'\"（指定截止日前到期）、"
+            "\"FStatus='1'\"（1=开工，3=完工，6=结案，7=结算）、"
+            "\"FMaterialId.FSpecification='APT32F004B'\"（指定产品型号）、"
+            "\"FLot.FNumber='AP5E047'\"（指定批次号）"
+        ),
+    )
+    field_keys: str = Field(
+        default=(
+            "FID,FBillNo,FDate,FDocumentStatus,FStatus,"
+            "FSupplierId.FName,FSupplierId.FNumber,"
+            "FTreeEntity_FEntryID,"
+            "FMaterialId.FNumber,FMaterialId.FName,FMaterialId.FSpecification,"
+            "FQty,FStockInQty,FNoStockInQty,"
+            "FPlanFinishDate,FUnitId.FName,"
+            "FLot.FNumber,FPurOrderNo"
+        ),
+        description=(
+            "返回字段，逗号分隔。"
+            "注：F_XTR_Qty 为晶圆辅单位片数（自定义字段，如需可追加到 field_keys）"
+        ),
+    )
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 # ─────────────────────────────────────────────
 # Tools
 # ─────────────────────────────────────────────
@@ -2646,19 +3435,27 @@ async def kingdee_query_bills(params: QueryInput) -> str:
     适用 form_id 示例：PUR_PurchaseOrder（采购订单）、SAL_SaleOrder（销售订单）、
     STK_InStock（采购入库）、SAL_OUTSTOCK（销售出库）、STK_MisDelivery（其他出库）。
 
+    也可查基础资料：BD_Currency（币别）、BD_AccountBook（账簿）、
+    BD_VOUCHERGROUP（凭证字）、BD_RateType（汇率类型）等。这类表单的查询视图
+    没有 FID 列，工具会自动去掉 FID 字段与 FID 排序，无需调用方特殊处理（#28）。
+
     Returns:
-        str: JSON，含 form_id / count / has_more / data 字段
+        str: JSON，含 form_id / count / has_more / data 字段；
+             发生自动降级时额外带 notice 字段说明
     """
     try:
-        result = await _post("query", _query_payload(
+        result, notice = await _post_query(
             params.form_id, params.field_keys, params.filter_string,
             params.order_string, params.start_row, params.limit
-        ))
+        )
         rows = _rows(result)
-        return _fmt({
+        out = {
             "form_id": params.form_id, "start_row": params.start_row,
             "count": len(rows), "has_more": len(rows) == params.limit, "data": rows,
-        })
+        }
+        if notice:
+            out["notice"] = notice
+        return _fmt(out)
     except Exception as e:
         return _err(e)
 
@@ -2964,6 +3761,105 @@ async def kingdee_query_inventory(params: InventoryQueryInput) -> str:
 
 
 @mcp.tool(
+    name="kingdee_query_outsource_orders",
+    annotations={"title": "查询委外加工订单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_outsource_orders(params: OutsourceOrderQueryInput) -> str:
+    """查询委外加工订单（SUB_SubReqOrder）列表。
+
+    委外加工订单记录外协生产任务，包含 CP 测试、封装、FT 成品测试等工序
+    的委托加工情况，是 WIP 在制量、逾期分析、回货预测的核心数据来源。
+
+    常用 filter_string：
+    - 在制（未结案）：  "FDocumentStatus='C' and FStatus not in ('6','7')"（默认）
+    - 指定供应商：     "FSupplierId.FName like '%华力%'"
+    - 逾期未完工：     "FPlanFinishDate<GETDATE() and FStatus not in ('3','6','7')"
+    - 30 天内到期：    "FPlanFinishDate>=GETDATE() and FPlanFinishDate<=DATEADD(day,30,GETDATE())"
+    - 指定批次：       "FLot.FNumber='AP5E047'"
+    - 指定产品型号：   "FMaterialId.FSpecification='APT32F004B'"
+    - 已完工待入库：   "FStatus='3'"
+
+    关键字段说明：
+    - FQty：           委外订单总数量（颗）
+    - FStockInQty：    已入库数量（已完工回厂的数量）
+    - FNoStockInQty：  未入库在制量（FQty - FStockInQty，可为负表示超收）
+    - FStatus：        执行状态（1=开工，3=完工，6=结案，7=结算）
+    - FPlanFinishDate：计划完工日（逾期判断基准）
+    - FPurOrderNo：    关联采购订单号（CP 委外专用，可反查晶圆来源采购单）
+    - FLot.FNumber：   批次号（WIP 追溯用）
+    - F_XTR_Qty：      晶圆辅单位片数（自定义扩展字段，如需可追加到 field_keys）
+
+    💡 REMEMBER: 若报"字段不存在"，用 kingdee_get_fields('SUB_SubReqOrder') 确认该账套可用字段
+
+    Returns:
+        str: JSON，含 count / has_more / data 字段
+    """
+    try:
+        result = await _post("query", _query_payload(
+            "SUB_SubReqOrder", params.field_keys, params.filter_string,
+            "FPlanFinishDate ASC,FBillNo ASC", params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e, op="query_outsource_orders")
+
+
+@mcp.tool(
+    name="kingdee_query_receipts",
+    annotations={"title": "查询收款单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_receipts(params: ReceiptQueryInput) -> str:
+    """查询应收单（AR_Receivable）列表，支持按客户、日期、核销状态、打开状态过滤。
+
+    应收单记录客户应收账款，包含应收金额、已核销金额、核销状态等信息，
+    是营收、回款、应收余额、票据占比等财务指标的核心数据来源。
+
+    常用 filter_string：
+    - 已审核：        "FDocumentStatus='C'"（默认）
+    - 指定客户：      "FCUSTOMERID.FNumber='C001'"
+    - 指定月份：      "FDATE>='2026-01-01' and FDATE<='2026-01-31'"
+    - 未核销：        "FWRITTENOFFSTATUS='A'"
+    - 未关闭：        "FOPENSTATUS='A'"
+    - 期初数据：      "FISINIT=true"（初始化单）或 "FISINIT=false"（业务单）
+
+    关键字段说明：
+    - FALLAMOUNTFOR：     应收总金额（原币含税），财务核心指标
+    - FNOTAXAMOUNTFOR：   应收不含税金额（原币），用于综合毛利率计算
+    - FRELATEHADPAYAMOUNT：已核销金额
+    - FWRITTENOFFSTATUS： 核销状态（A=未核销，B=部分核销，C=完全核销）
+    - FOPENSTATUS：       打开状态（A=未关闭，B=已关闭，C=部分关闭）
+    - FENDDATE_H：        到期日
+    - FISINIT：           是否为初始化单据（期初数据）
+
+    ⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID 可能为 FCustId、FDate 可能为 FDATE），
+    先调用 kingdee_get_fields('AR_Receivable') 确认该账套可用字段。
+
+    Returns:
+        str: JSON，含 count / has_more / data 字段
+    """
+    try:
+        result = await _post("query", _query_payload(
+            "AR_Receivable", params.field_keys, params.filter_string,
+            "FDATE DESC,FBillNo DESC", params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e, op="query_receipts")
+
+
+@mcp.tool(
     name="kingdee_query_materials",
     annotations={"title": "查询物料档案", "readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": False}
@@ -3014,7 +3910,7 @@ async def kingdee_query_partners(params: PartnerQueryInput) -> str:
         return _err(e)
 
 
-async def _prepare_save_model(form_id: str, raw_model: dict) -> tuple[dict, list]:
+async def _prepare_save_model(form_id: str, raw_model: dict) -> tuple[dict, list, list]:
     """Save 前的模型预处理：字段名自动纠错 + 字段顺序防御。
 
     审计 A-6：这两段此前只写在 kingdee_save_bill 里，
@@ -3022,8 +3918,11 @@ async def _prepare_save_model(form_id: str, raw_model: dict) -> tuple[dict, list
     同一个「保存」动词走两条路径行为不同，一站式工具在本环境下反而更容易
     触发"含税单价不能小于等于0"。抽成共用函数，两边行为一致。
 
+    issue #9：既不是有效字段、又没能自动匹配的字段此前被静默丢弃，用户以为
+    传进去了、金蝶那边根本没收到——现在一并报出 unknown_fields，不做改写。
+
     Returns:
-        (处理后的 model, 自动修正记录列表)
+        (处理后的 model, 自动修正记录列表, 无法识别的字段列表)
     """
     model = dict(raw_model)
     # 新建时 FID 设为 0，修改时保留原 FID
@@ -3031,9 +3930,10 @@ async def _prepare_save_model(form_id: str, raw_model: dict) -> tuple[dict, list
 
     # 尝试自动修正字段名（基于元数据）
     auto_fixes: list = []
+    unknown_fields: list = []
     validator = await _get_metadata_validator(form_id)
     if validator:
-        model, auto_fixes = validator.validate_and_fix(model)
+        model, auto_fixes, unknown_fields = validator.validate_and_fix(model)
 
     # ⚠️ 本环境金蝶 Save 对字段顺序敏感：财务信息(含 FIN，如 FQUOTATIONFIN)
     # 必须排在分录(含 ENTRY，如 FQUOTATIONENTRY)之前，否则分录单价被判定为 0
@@ -3044,7 +3944,7 @@ async def _prepare_save_model(form_id: str, raw_model: dict) -> tuple[dict, list
     _non_entry = [k for k in _keys if k not in _entry_keys]
     if _entry_keys and len(_non_entry) != len(_keys):
         model = {k: model[k] for k in _non_entry + _entry_keys}
-    return model, auto_fixes
+    return model, auto_fixes, unknown_fields
 
 
 @mcp.tool(
@@ -3073,7 +3973,7 @@ async def kingdee_save_bill(params: SaveInput) -> str:
         str: JSON，含新建单据的 FID 和单据编号 FBillNo
     """
     try:
-        model, auto_fixes = await _prepare_save_model(params.form_id, params.model)
+        model, auto_fixes, unknown_fields = await _prepare_save_model(params.form_id, params.model)
         result = await _post_raw(
             "save",
             params.form_id,
@@ -3087,10 +3987,27 @@ async def kingdee_save_bill(params: SaveInput) -> str:
         status_data = _result_status(result, "save")
         if status_data.get("success"):
             status_data["tip"] = "单据已保存为草稿，需要提交+审核后才能生效"
-            # 如果有自动修正，记录到结果中
+            # 如果有自动修正，记录到结果中（含中文字段名）
             if auto_fixes:
                 status_data["auto_fixes"] = auto_fixes
-                status_data["tip"] += f"（自动修正了 {len(auto_fixes)} 处字段名）"
+                status_data["tip"] += f"（自动修正了 {len(auto_fixes)} 处字段名，详见 auto_fixes）"
+            # 无法识别的字段必须报出来 —— 它们会被金蝶静默丢弃，用户以为传进去了
+            if unknown_fields:
+                status_data["unknown_fields"] = unknown_fields
+                status_data["tip"] += (
+                    f"（另有 {len(unknown_fields)} 个字段无法识别、金蝶可能不认，"
+                    f"详见 unknown_fields）"
+                )
+        else:
+            # 保存失败时也要报出字段问题 —— 这才是用户真正卡住的地方
+            if auto_fixes:
+                status_data["auto_fixes"] = auto_fixes
+            if unknown_fields:
+                status_data["unknown_fields"] = unknown_fields
+                status_data["field_hint"] = (
+                    "部分字段无法识别（见 unknown_fields），"
+                    "请用 kingdee_get_fields 查该单据的真实字段名后重试"
+                )
         return _fmt(status_data)
     except Exception as e:
         return _err(e, op="save")
@@ -3181,7 +4098,7 @@ async def kingdee_validate_bill(params: SaveInput) -> str:
         if not validator:
             return _fmt({"ok": False, "error": "无法获取该表单元数据，无法校验（请检查 form_id 是否正确或网络是否可达）"})
 
-        fixed, fixes = validator.validate_and_fix(model)
+        fixed, fixes, unknown = validator.validate_and_fix(model)
 
         # 缺失必填（顶层，非分录）
         head_field_names = {k for k, d in validator.fields.items() if not d.is_entry}
@@ -3205,7 +4122,7 @@ async def kingdee_validate_bill(params: SaveInput) -> str:
                 if miss:
                     entry_issues.append({"entry": entry_name, "row": idx, "missing_required": miss})
 
-        ok = (len(missing_required) == 0 and len(entry_issues) == 0)
+        ok = (len(missing_required) == 0 and len(entry_issues) == 0 and len(unknown) == 0)
         suggestions = []
         if missing_required:
             suggestions.append(f"补齐顶层必填字段：{', '.join(missing_required)}")
@@ -3213,12 +4130,20 @@ async def kingdee_validate_bill(params: SaveInput) -> str:
             if "missing_required" in ei:
                 suggestions.append(f"{ei['entry']} 第{ei['row']}行缺失必填：{', '.join(ei['missing_required'])}")
         if fixes:
-            suggestions.append(f"保存时将自动修正 {len(fixes)} 处字段名（详见 auto_fixes）")
+            suggestions.append(
+                f"保存时将自动修正 {len(fixes)} 处字段名（详见 auto_fixes，含中文字段名对照）"
+            )
+        for u in unknown:
+            suggestions.append(
+                f"字段「{u['field']}」无法识别，将被忽略 —— "
+                f"请用 kingdee_get_fields 查真实字段名（详见 unknown_fields）"
+            )
 
         return _fmt({
             "ok": ok,
             "is_new": model.get("FID", 0) in (0, None, ""),
             "auto_fixes": fixes,
+            "unknown_fields": unknown,
             "missing_required": missing_required,
             "entry_issues": entry_issues,
             "suggestions": suggestions,
@@ -3278,7 +4203,7 @@ async def kingdee_refresh_metadata(form_id: str) -> str:
         metadata = await _query_metadata(form_id, force=True)
         if not metadata:
             return _fmt({"ok": False, "form_id": form_id, "error": "元数据拉取失败（检查 form_id / 网络 / 登录态）"})
-        validator = MetadataValidator(metadata)
+        validator = MetadataValidator(metadata, form_id=form_id)
         MetadataValidator.set(form_id, validator)
         return _fmt({
             "ok": True,
@@ -4019,9 +4944,10 @@ async def kingdee_create_and_audit(params: CreateAndAuditInput) -> str:
 
     # Step 1: Save
     try:
-        # 审计 A-6：与 kingdee_save_bill 走同一套预处理（字段自愈 + 顺序防御），
-        # 否则同一个"保存"动词在两条路径上行为不同。
-        model, _auto_fixes = await _prepare_save_model(params.form_id, params.model)
+        # 审计 A-6：与 kingdee_save_bill 走同一套预处理（字段自愈 + 顺序防御 +
+        # issue #9 的 unknown_fields 可见化），否则同一个"保存"动词在两条路径
+        # 上行为不同。
+        model, auto_fixes, unknown_fields = await _prepare_save_model(params.form_id, params.model)
         save_result = await _post_raw(
             "save",
             params.form_id,
@@ -4047,6 +4973,11 @@ async def kingdee_create_and_audit(params: CreateAndAuditInput) -> str:
     if bill_no:
         step_save["bill_no"] = bill_no
         out["bill_no"] = bill_no
+    if auto_fixes:
+        step_save["auto_fixes"] = auto_fixes
+    if unknown_fields:
+        # issue #9：无法识别的字段会被金蝶静默丢弃，composite 工具也不该瞒着
+        step_save["unknown_fields"] = unknown_fields
     if not save_status.get("success"):
         step_save["errors"] = save_status.get("errors", [])
         steps.append(step_save)
@@ -7341,6 +8272,14 @@ async def kingdee_save_production_order(params: ProductionOrderSaveInput) -> str
     try:
         model = dict(params.model)
         model.setdefault("FID", 0)
+
+        # 自动修正字段名（与 kingdee_save_bill 同口径）：生产订单同样支持元数据纠错
+        auto_fixes = []
+        unknown_fields = []
+        validator = await _get_metadata_validator("PRD_MO")
+        if validator:
+            model, auto_fixes, unknown_fields = validator.validate_and_fix(model)
+
         result = await _post_raw(
             "save", "PRD_MO", model,
             need_return_fields=["FID", "FBillNo"],
@@ -7348,6 +8287,24 @@ async def kingdee_save_production_order(params: ProductionOrderSaveInput) -> str
         status_data = _result_status(result, "save")
         if status_data.get("success"):
             status_data["tip"] = "生产订单已保存为草稿，需要提交+审核后才能下推领料单"
+            if auto_fixes:
+                status_data["auto_fixes"] = auto_fixes
+                status_data["tip"] += f"（自动修正了 {len(auto_fixes)} 处字段名，详见 auto_fixes）"
+            if unknown_fields:
+                status_data["unknown_fields"] = unknown_fields
+                status_data["tip"] += (
+                    f"（另有 {len(unknown_fields)} 个字段无法识别、金蝶可能不认，"
+                    f"详见 unknown_fields）"
+                )
+        else:
+            if auto_fixes:
+                status_data["auto_fixes"] = auto_fixes
+            if unknown_fields:
+                status_data["unknown_fields"] = unknown_fields
+                status_data["field_hint"] = (
+                    "部分字段无法识别（见 unknown_fields），"
+                    "请用 kingdee_get_fields 查生产订单的真实字段名后重试"
+                )
         return _fmt(status_data)
     except Exception as e:
         return _err(e, op="save")
@@ -7366,7 +8323,7 @@ async def kingdee_submit_production_orders(params: ProductionOrderBillIdsInput) 
     """
     try:
         result = await _post_raw("submit", "PRD_MO", {"Ids": params.bill_ids})
-        status_data = _result_status(result, "submit")
+        status_data = _result_status(result, "submit", requested_ids=params.bill_ids)
         if status_data.get("success"):
             # next_action 是**动词**不是工具名：harness RULE-001 据此反推后继动作。
             # 塞工具名会让规则解析失败并恒定误报（审计 R-2）。
@@ -7390,7 +8347,7 @@ async def kingdee_audit_production_orders(params: ProductionOrderBillIdsInput) -
     """
     try:
         result = await _post_raw("audit", "PRD_MO", {"Ids": params.bill_ids})
-        return _fmt(_result_status(result, "audit"))
+        return _fmt(_result_status(result, "audit", requested_ids=params.bill_ids))
     except Exception as e:
         return _err(e, op="audit")
 

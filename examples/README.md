@@ -54,16 +54,31 @@
 |------|------|
 | 操作日志查询 | [`operation-log.md`](./operation-log.md) |
 
+### 财务
+| 场景 | 文件 |
+|------|------|
+| 查询应收单（营收/回款/应收余额） | [`ar-receivable-query.md`](./ar-receivable-query.md) |
+
 ### 成本管理
 | 场景 | 文件 |
 |------|------|
 | 存货核算/产品成本/标准成本分析 | [`cost-mgmt.md`](./cost-mgmt.md) |
+
+### 委外加工
+| 场景 | 文件 |
+|------|------|
+| 查询委外加工订单（在制/逾期/回货） | [`outsource-query.md`](./outsource-query.md) |
 
 ### 工作流与审批
 | 场景 | 文件 |
 |------|------|
 | 审批流操作 | [`workflow-approve.md`](./workflow-approve.md) |
 | 单据生命周期与操作提示 | [`workflow-hints.md`](./workflow-hints.md) |
+
+### 单据附件
+| 场景 | 文件 |
+|------|------|
+| 上传、下载及分块续传附件 | [`bill-attachments.md`](./bill-attachments.md) |
 
 ## 使用方式
 

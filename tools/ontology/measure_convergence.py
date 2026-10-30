@@ -36,6 +36,12 @@ DELIBERATE = {
     "kingdee_describe_table": _SQL_REASON + " 本工具读单张表的列定义与索引。",
     "kingdee_discover_metadata_candidates": _SQL_REASON
         + " 本工具从数据库结构反推某单据可能对应的表，是 SQL 侧的启发式推断。",
+    "kingdee_download_attachment": (
+        "附件按 WebAPI V6.0 的分块二进制协议传输（file_id/分块序号/Base64），"
+        "跟 14 个动词 × 名词的本体模型不是同一种东西——kd_query/kd_read 返回的是"
+        "结构化字段，不是文件流。折叠进通用动词会让 kd_read 的返回形状因单据/"
+        "附件而异，调用方无法预期。保持独立更清楚。"
+    ),
 }
 
 
@@ -93,6 +99,12 @@ def classify(t: dict, nouns: set[str]) -> tuple[str, str]:
         return "kd_describe(template)", ""
     if t["tool"] in ("kingdee_get_fields", "kingdee_list_forms"):
         return "kd_describe(fields)", ""
+    if t["tool"] == "kingdee_query_bills":
+        # issue #28 之后走共用的 _post_query()（无 FID 视图自动降级），
+        # 不再直接内联 _query_payload——静态子串匹配找不到，但底层仍是
+        # form_id 驱动的 ExecuteBillQuery，kd_query 能表达同一次调用
+        # （只是还没有 kd_query 自己的 FID 自动降级，算后续可做的增强）。
+        return "kd_query", ""
     if "view" in t["eps"]:
         return "kd_read", ""
     if "report" in t["eps"]:

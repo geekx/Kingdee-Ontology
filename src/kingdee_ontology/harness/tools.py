@@ -49,6 +49,8 @@ WRITE_TOOL_VERBS: dict[str, tuple[str, ...]] = {
     "kingdee_workflow_reject":          ("unaudit",),
     # ── 写缓存但不碰金蝶（审计 N-2 后 readOnlyHint 改为 False）──
     "kingdee_refresh_metadata":         ("refresh",),
+    # ── 附件（WebAPI V6.0，分块上传，不走单据生命周期）──────
+    "kingdee_upload_attachment":        ("upload_attachment",),
 }
 
 # 一次调用内顺序执行多个写动词 = 无补偿 Saga
@@ -65,6 +67,8 @@ NEXT_VERB: dict[str, str | None] = {
     "audit": None, "unaudit": None, "delete": None, "refresh": None,
     "cancel": None, "void": None, "close": None, "unclose": None,
     "forbid": None, "enable": None,
+    # 多块上传内部自己循环直到 is_last，不进入 save→submit→audit 生命周期
+    "upload_attachment": None,
 }
 
 # next_action 字段的合法取值域（修审计 R-2）。
