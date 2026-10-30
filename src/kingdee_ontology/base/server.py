@@ -127,19 +127,15 @@ class ActInput(BaseModel):
     "title": "执行写动词", "readOnlyHint": False, "destructiveHint": True})
 @_guard
 async def kd_act(params: ActInput) -> str:
-    """对单据执行写动词。返回体**必带 contract**（arity/atomicity/idempotent/
-    destructive/inverse）与逐目标结果，调用方据此判断失败后能否重试、要不要补偿。
+    """对单据执行写动词。返回体必带 contract（arity/atomicity/idempotent/destructive/
+    inverse）与逐目标结果，据此判断失败后能否重试、要不要补偿；不适用的动词会在
+    发请求前拦下并给出该单据可用的动词。
 
-    执行前自动校验：动词是否适用于该单据、当前状态是否满足前置条件。
-    不适用时在发请求前就拦下，并给出该单据可用的动词。
+    有 advisories 时先念给用户再执行：AIP-04＝不可逆，执行前必须让用户点头；
+    AIP-05＝走金蝶「操作」接口的动词，二开单未给 operation 会用默认值导致报错。
+    无 advisories 字段时不存在，不必判断空数组。
 
-    有 advisories 时先念给用户听、再执行，不要静默略过：
-      AIP-04（不可逆）  这一步没有逆动词，做完退不回来——执行前必须让用户点头。
-      AIP-05（操作编码）走金蝶「操作」接口的动词（close/void/forbid/…），
-                        二开单未给 operation 时会用默认值，报错多半出在这。
-    没有忠告时这个字段不存在——不必检查是否为空数组。
-
-    dry_run=True + verb='save' 只做保存前校验不写入，用于先确认字段是否齐全。"""
+    dry_run=True + verb='save' 只校验不写入，用于先确认字段齐全。"""
     return _fmt(await _d().act(params.verb, params.noun, params.targets,
                                model=params.model, current_state=params.current_state,
                                operation=params.operation, dry_run=params.dry_run))
@@ -184,22 +180,14 @@ class ObjectInput(BaseModel):
     "title": "打开对象", "readOnlyHint": True, "idempotentHint": True})
 @_guard
 async def kd_object(params: ObjectInput) -> str:
-    """以**对象**为中心操作，而不是以工具为中心。
+    """以**对象**为中心操作，而不是以工具为中心：打开一个对象，一次拿到它的属性、
+    当前状态、**此刻能做哪些动作**（不能做的会说明为什么）、连到哪些别的对象。
 
-    打开一个对象，一次拿到：它的属性、它现在处于什么状态、
-    **此刻能对它做哪些动作**（不能做的会说明为什么、要先做什么）、
-    以及它连到哪些别的对象。
+    navigate_to 需同时给 id（源单编号）才能查下游单据；其余参数按各自的字段
+    描述独立使用即可（identify/search/noun/id/category）。
 
-    用法：
-      kd_object(identify="CGDD000231")           只有单号、不知道是什么单
-      kd_object(search="采购")                    搜索对象类型
-      kd_object(noun="采购订单")                  类型卡片：这类对象长什么样、能做什么
-      kd_object(noun="采购订单", id="CGDD000231")  实例卡片：这一张单此刻能做什么
-      kd_object(noun="采购订单", id="CGDD000231", navigate_to="采购入库单")
-                                                查它的下游单据
-
-    卡片里的 operations 是本租户已经编排好的业务操作——有现成的就别自己拼步骤。
-    拿到 actions 里 enabled=true 的动词后，用 kd_act 执行。"""
+    卡片里的 operations 是本租户已编排好的业务操作，有现成的就别自己拼步骤；
+    拿到 actions 里 enabled=true 的动词后用 kd_act 执行。"""
     d = _d()
     if params.identify:
         return _fmt(d.identify(params.identify))
@@ -260,17 +248,14 @@ class RunOpInput(BaseModel):
     "title": "执行业务操作", "readOnlyHint": False, "destructiveHint": True})
 @_guard
 async def kd_run(params: RunOpInput) -> str:
-    """执行本租户定义的业务操作（如『销售开票』『采购收货入库』）—— 走 Saga 引擎。
+    """执行本租户定义的业务操作（如『销售开票』）——走 Saga 引擎：`检查` 步骤先验
+    条件，不满足不往下走；标『授权』的步骤会停下来等人批（确认一次**不等于**
+    全权委托）；任一步失败，已生效的步骤按**逆序**补偿；停在授权处时返回
+    run_id，批准后带 run_id 回来续跑。
 
-    这不是「顺序打一串动作」，而是一个**多扣扳机组**：
-      守卫  `检查` 步骤在写之前先验条件（有没有货、单是不是已审核），不满足就不往下走；
-      授权  标了『授权』的子任务会各自停下来等人批 —— 开头确认一次**不等于**全权委托；
-      补偿  任一步失败，已生效的写步骤按**逆序**补偿掉；
-      续跑  停在授权处时返回 run_id，批准后带 run_id 回来接着走。
-
-    未确认时不做任何写操作，只返回执行计划。
-    返回体的 state 是关键：awaiting_auth（等人批）/ done / compensated（已退干净）
-    / halted（停了但有东西没退）/ compensation_failed（**最坏，必须人工处理**）。"""
+    未确认时只返回执行计划，不做任何写操作。
+    返回体 state：awaiting_auth(等批)/done/compensated(已退干净)/halted(有东西
+    没退)/compensation_failed(**最坏，必须人工处理**)。"""
     return _fmt(await _d().run_operation(params.operation, params.targets,
                                          confirmed=params.confirmed,
                                          run_id=params.run_id or None))
@@ -291,15 +276,11 @@ class SagaInput(BaseModel):
     "title": "多扣扳机组：授权与清算", "readOnlyHint": False, "destructiveHint": False})
 @_guard
 async def kd_saga(params: SagaInput) -> str:
-    """管理多扣扳机组的运行：看谁在等授权、批准或拒绝某一步、查某次运行的状态。
+    """管理多扣扳机组的运行：谁在等授权、批准/拒绝某一步、查某次运行状态——
+    按 action 走，组合用法见各字段描述。
 
-      kd_saga(action="list")                             还有哪些没了结
-      kd_saga(action="status", run_id="…")               某次运行到哪了
-      kd_saga(action="authorize", run_id="…", by="张三")  批准当前停住的那一步
-      kd_saga(action="authorize", run_id="…", by="张三", approve=False, reason="金额不对")
-
-    **等授权的运行最容易被忘掉**——放着不管，已生效的写操作就成了无人认领的
-    中间态。定期 list 一下。"""
+    等授权的运行最容易被忘掉——已生效的写操作会变成无人认领的中间态，定期
+    list 一下。"""
     d = _d()
     if params.action == "list":
         return _fmt(d.saga_list(only_unresolved=not params.all))
@@ -360,23 +341,14 @@ async def kd_audit(params: AuditInput) -> str:
 @_guard
 async def kd_check_profile(tenant: str = "", probe: bool = False,
                            probe_nouns: str = "") -> str:
-    """校验租户配置（二开表单/操作码/下推关系/业务操作入口）是否填写正确。
-    返回中文的错误与建议，供业务人员自行修正 profiles/<租户>/profile.yml。
+    """校验租户配置（二开表单/操作码/下推关系/业务操作入口），返回中文错误与建议，
+    供业务人员自行修正 profiles/<租户>/profile.yml。
 
-    probe=True 时额外做一次连通性自检：真登录一次，只读探测几类常见单据，
-    报告登录是否成功、这个账号大概能碰到哪些模块。**会真的向你的金蝶账套
-    发请求**，默认关闭；只读，不会调用任何写动词。首次接入时建议先这样跑
-    一遍，比等第一次业务查询失败才发现账号密码不对要快。
-
-    probe_nouns 留空时系统按"本租户已配置的业务操作入口 + 常见类别"自动挑
-    几个候选；也可以传逗号分隔的名词自己指定要探测哪几类，如
-    '销售订单,采购订单,物料'。写一个本体不认识的 form_id 也可以——会绕开
-    本体解析直接探测，账号真的能查就说明是个未登记的表单，自动提一条建议到
-    WikiSkill（wikiskill/knowledge.json），供人日后决定要不要补进本体，
-    不会自动改配置。如果这个陌生 form_id 报的错像是报表类二开对象
-    （GetSysReportData，而不是单据用的 ExecuteBillQuery），会归类为
-    possible_report——不是权限问题，也还没确认真的可用，详见
-    docs/ontology/06-report-probing.md。"""
+    probe=True 额外做一次连通性自检：真登录一次，只读探测几类单据，报告账号能
+    碰到哪些模块——**会真的发请求**，默认关闭，只读，首次接入建议先跑一遍。
+    probe_nouns 留空自动挑候选，也可传逗号分隔的名词自己指定；传一个本体不
+    认识的名词会绕开本体直接探测，能查到就提一条建议到 WikiSkill（不自动改
+    配置），报表类二开对象会被单独归类。细节见 docs/ontology/06-report-probing.md。"""
     from kingdee_ontology.base.validate_profile import validate
     errs, warns = validate(tenant or _TENANT)
     out = {"tenant": tenant or _TENANT, "ok": not errs,
