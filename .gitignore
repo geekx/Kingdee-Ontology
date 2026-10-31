@@ -33,6 +33,11 @@ Thumbs.db
 # Runtime logs
 usage_log.jsonl
 
+# kingdee_console 本地运行时产物
+kingdee_console.db
+frontend/kingdee-console/node_modules/
+frontend/kingdee-console/dist/
+
 # Tool caches
 .playwright-mcp/
 

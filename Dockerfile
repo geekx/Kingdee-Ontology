@@ -40,6 +40,9 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 # 只拷贝打包必需的文件，改代码时不会让依赖层缓存失效
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ ./src/
+# force-include 把 profiles/ 下的示例租户配置和说明打进 wheel（见 pyproject.toml），
+# 构建期就要能找到这两个文件，否则 pip install . 直接 FileNotFoundError。
+COPY profiles/ ./profiles/
 
 RUN pip install --index-url "${PIP_INDEX_URL}" .
 

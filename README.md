@@ -10,8 +10,8 @@
 ## 本分支的增补：操作原子化审计 + Ontology 建模 + 三层架构
 
 > **分支** `claude/kingdee-mcp-ontology-audit-nis4mg` ｜ **基线** 上游 `2c44e6f` ｜ **包版本** `v0.4.0`
-> **更新于** 2026-10-30 13:59 UTC+08:00
-> **测试** 3066 passed, 421 skipped, 1 warning in 45.76s（本机实测）｜ **原子性审计** 5 项发现 / 0 项 error
+> **更新于** 2026-10-31 14:15 UTC+08:00
+> **测试** 3096 passed, 421 skipped, 1 warning in 52.03s（本机实测）｜ **原子性审计** 5 项发现 / 0 项 error
 >
 > 本区块由 `python3 tools/ontology/update_readme.py` 生成，数字均为实测。
 
@@ -22,7 +22,7 @@
 
 | 指标 | 之前 | 现在 |
 |---|---|---|
-| MCP 工具面 `tools/list` | ~49,297 token（200k 上下文的 24%） | ~2,405 token（**-96%**） |
+| MCP 工具面 `tools/list` | ~49,297 token（200k 上下文的 24%） | ~4,120 token（**-92%**） |
 | 操作链约束层覆盖率 | 25%（24 个写动词只认 3 个） | **100%**（漏登记 = CI 失败） |
 | 自动审计 error | 7 | **0** |
 | 只读工具可由底座表达 | 0 / 75 | **70 / 75（93%）** |
@@ -219,6 +219,35 @@ docker build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ -
   docker run --rm --env-file .env ghcr.io/wahailong/kingdeemcp:latest --check
   ```
 - 容器里跑的是金蝶 API 那部分。SQL Server 直连探查工具还需要额外装微软 ODBC 驱动（`msodbcsql18`），镜像里只预装了 `unixodbc` 基础库。
+
+## 控制台（Dashboard + 对话窗口）
+
+`src/kingdee_console/`（FastAPI 后端）+ `frontend/kingdee-console/`（React/Vite
+前端）：给人用的 Web 管理界面，不是 MCP 协议本身。架构上是在 Ontology 底座
+之上再包一层——真正"调用现有 MCP 接口"：同进程里直接拿
+`kingdee_ontology.base.server` 的 FastMCP 实例调 `list_tools()`/`call_tool()`，
+把结果反推成按名词类别上色的"能力标签"展示出来。
+
+```bash
+pip install -e ".[console]"
+kingdee-console                 # 默认演示模式（KINGDEE_CONSOLE_DEMO），不连真账套
+cd frontend/kingdee-console && npm install && npm run dev
+```
+
+- **Dashboard**：能力矩阵（14 个动词 × 86+ 名词，按单据/基础资料/视图/系统
+  四类上色）、多租户/角色/助理管理、A2A 跨助理请求 demo 与审计日志、
+  旁路对话直接调用某个工具（能力浏览器）。
+- **对话窗口**：自然语言 → Claude 用 base 层真实的 11 个 `kd_*` 工具（不是
+  另造一套 DSL）选工具、填参数 → 执行结果里的 verb/noun 反推出能力标签，
+  在消息上显示成颜色 chip；每个助理挂一份对话历史，可重命名/删除。
+  没配 `ANTHROPIC_API_KEY` 时优雅降级，不影响 Dashboard 其它功能。
+- **多租户 / A2A 骨架**：Tenant/Role/Assistant 三层模型，角色决定能碰哪些
+  名词（RBAC）；A2A 请求按**被问的那个助理**的角色判权限，返回结构化结果
+  和执行者信息，但从不把金蝶账套凭据带过去——这条隔离线跟浏览器/对话界面
+  到控制台后端是同一条。当前只打通同租户下的跨角色场景，真正的多账套
+  同时在线留给后续迭代。
+
+详见 `frontend/kingdee-console/README.md`。
 
 ## 配置教程
 

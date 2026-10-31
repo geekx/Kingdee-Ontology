@@ -10,6 +10,7 @@ token 账（实测，见 docs/ontology/05-architecture.md）：
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 from typing import Any, Optional
@@ -39,6 +40,15 @@ def _fmt(data: Any) -> str:
 
 
 def _guard(fn):
+    """发现于搭 kingdee_console 时：之前这里只手动抄了 __name__/__doc__，
+    没有 functools.wraps——FastMCP 的 func_metadata 靠 inspect.signature()
+    的 follow_wrapped 去穿透包装层拿到 `(params: QueryInput)` 这样的真实
+    签名，没有 __wrapped__ 就只能看见 wrapper 自己的 `(*a, **kw)`，生成的
+    inputSchema 变成 {a, kw} 两个假字段。结果是：11 个 kd_* 工具里只要
+    带了 @_guard，走真实 MCP 协议（tools/call 传一个扁平的参数 dict）调用
+    全部失败——之前的测试都是直接拿 Pydantic Input 模型调内层函数，从没
+    真正经过 FastMCP 的 call_tool() 这条路径，所以一直没暴露。"""
+    @functools.wraps(fn)
     async def wrapper(*a, **kw):
         try:
             return await fn(*a, **kw)
@@ -46,8 +56,6 @@ def _guard(fn):
             return _fmt({"ok": False, "blocked_by": "precondition", "error": str(e)})
         except Exception as e:
             return _fmt({"ok": False, "error": f"{type(e).__name__}: {e}"})
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
     return wrapper
 
 
