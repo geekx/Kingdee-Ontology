@@ -36,6 +36,13 @@ dependencies = [
 # 每一次 `uvx`/`pip install` 都可能卡在编译或直接失败，而绝大多数用户
 # 根本用不到它。导入处早已是惰性的并带安装提示，移出去不影响任何现有调用。
 sql = ["pyodbc>=5.0.0"]
+# 控制台（Dashboard + 对话窗口）：单独的 extra，不装控制台不该连带装 Web 框架
+# 和 Anthropic SDK——MCP 服务端本身不需要这些依赖。
+console = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "anthropic>=0.40.0",
+]
 test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -52,12 +59,13 @@ kingdee-mcp = "kingdee_mcp.server:main"          # 原 97 工具 MCP 服务端
 kingdee-ontology = "kingdee_ontology.base.server:main"   # 底座 MCP 服务端（11 工具）
 kd-logic = "kingdee_ontology.cli:main"           # 判断层，按需独立运行、不需要模型
 kingdee-setup-check = "kingdee_ontology.setup_check:main"  # 引导式环境自检：配置/连通/权限
+kingdee-console = "kingdee_console.app:main"      # Dashboard + 对话窗口控制台（需要 [console] extra）
 
 [tool.hatch.build.targets.wheel]
 # kingdee_ontology 此前**根本没被打包**：base/ aip/ saga/ 等都是仓库根目录下的
 # 顶层目录，`pip install` 装不到。同时它们也不能以 base/ pipeline/ 这种名字
 # 上 PyPI——那会和别的包撞名。故收进 kingdee_ontology 命名空间。
-packages = ["src/kingdee_mcp", "src/kingdee_ontology"]
+packages = ["src/kingdee_mcp", "src/kingdee_ontology", "src/kingdee_console"]
 
 [tool.hatch.build.targets.wheel.force-include]
 # 本体注册表是数据不是代码，但服务端没它跑不起来，必须进 wheel。
