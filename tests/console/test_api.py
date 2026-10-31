@@ -1,13 +1,21 @@
-"""FastAPI 端到端：Dashboard/对话/A2A 三组 API。"""
+"""FastAPI 端到端：Dashboard/对话/A2A 三组 API。
+
+需要 `pip install -e ".[console]"`——核心逻辑（catalog/tenancy/a2a/intent）
+不依赖 FastAPI，CI 默认只装 `[test]`，没装 `[console]` 时这个文件整体跳过，
+其余 tests/console/ 照常跑（也正因为这样才知道 FastAPI 层以下不依赖它）。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 import pytest
-from fastapi.testclient import TestClient
 
-from kingdee_console import tenancy
-from kingdee_console.app import create_app
+pytest.importorskip("fastapi", reason="需要 pip install -e \".[console]\" 才能测 HTTP 层")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from kingdee_console import tenancy  # noqa: E402
+from kingdee_console.app import create_app  # noqa: E402
 
 
 @dataclass
