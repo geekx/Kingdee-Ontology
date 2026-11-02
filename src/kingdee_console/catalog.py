@@ -74,14 +74,21 @@ def tag_for(ontology: Ontology, verb_name: str, noun_form_id: str) -> Optional[C
 def tags_from_dispatch_result(ontology: Ontology, tool: str, result: dict) -> list[CapabilityTag]:
     """从 kd_query/kd_act/kd_push/kd_read 的返回体里抽出全部能力标签。
 
-    kd_query 合并查询（逗号分隔多个名词）时返回体里是 result["groups"]，
-    每组各自带 noun；单一名词查询则顶层直接带 noun。act/push 恒定顶层带
-    verb+noun。按工具名决定怎么找 verb——返回体本身不带 verb 字样的只有
-    query/read（它们的 verb 就是工具名去掉 kd_ 前缀）。
+    三种返回体形状，分别处理：
+      - kd_query 合并查询（逗号分隔多个名词）：result["groups"]，每组各自带 noun。
+      - kd_push：顶层是 {"verb": "push", "from": ..., "to": ...}，没有 "noun"
+        字段——源单和目标单各出一个标签，Ontology 图上据此画一条"正在下推"
+        的动效边（见 routers/ontology.py 的事件消费端）。
+      - kd_act / kd_query（单名词）/ kd_read：顶层带 noun。
+    按工具名决定怎么找 verb——返回体本身不带 verb 字样的只有 query/read
+    （它们的 verb 就是工具名去掉 kd_ 前缀）。
     """
     verb_of_tool = {"kd_query": "query", "kd_read": "read"}
     tags: list[CapabilityTag] = []
-    groups = result.get("groups") if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        return tags
+
+    groups = result.get("groups")
     if isinstance(groups, list):
         for g in groups:
             if isinstance(g, dict) and "noun" in g and "error" not in g:
@@ -90,7 +97,15 @@ def tags_from_dispatch_result(ontology: Ontology, tool: str, result: dict) -> li
                 if t:
                     tags.append(t)
         return tags
-    if isinstance(result, dict) and "noun" in result:
+
+    if result.get("verb") == "push" and "from" in result and "to" in result:
+        for key in ("from", "to"):
+            t = tag_for(ontology, "push", result[key])
+            if t:
+                tags.append(t)
+        return tags
+
+    if "noun" in result:
         verb = result.get("verb") or verb_of_tool.get(tool, "")
         if verb:
             t = tag_for(ontology, verb, result["noun"])

@@ -22,6 +22,9 @@ function App() {
           <NavLink to="/chat" className={linkClass}>
             对话
           </NavLink>
+          <NavLink to="/ontology" className={linkClass}>
+            Ontology 图谱
+          </NavLink>
         </nav>
       </header>
       <main className="flex-1 bg-slate-50 dark:bg-slate-950">

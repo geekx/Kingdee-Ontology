@@ -35,6 +35,7 @@ usage_log.jsonl
 
 # kingdee_console 本地运行时产物
 kingdee_console.db
+.kingdee_console_profiles/
 frontend/kingdee-console/node_modules/
 frontend/kingdee-console/dist/
 

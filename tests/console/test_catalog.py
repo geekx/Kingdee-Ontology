@@ -59,3 +59,19 @@ def test_tags_from_dispatch_result_multi_noun_query(seeded):
     tags = tags_from_dispatch_result(gw.ontology, "kd_query", result)
     nouns = {t.noun for t in tags}
     assert nouns == {"STK_Inventory", "SAL_SaleOrder"}
+
+
+def test_tags_from_dispatch_result_push_tags_both_source_and_target(seeded):
+    """kd_push 的返回体没有 "noun" 字段，是 {"from":..., "to":...}——
+    这条路径没走通的话，Ontology 图上永远看不到下推的动效边。"""
+    gw = McpGateway()
+
+    async def run():
+        return await gw.call_tool("kd_push", {"params": {
+            "source": "销售订单", "target": "销售出库单", "source_bill_nos": ["XSDD000101"],
+        }})
+
+    result = asyncio.run(run())
+    tags = tags_from_dispatch_result(gw.ontology, "kd_push", result)
+    assert {t.noun for t in tags} == {"SAL_SaleOrder", "SAL_OUTSTOCK"}
+    assert all(t.verb == "push" and t.destructive for t in tags)

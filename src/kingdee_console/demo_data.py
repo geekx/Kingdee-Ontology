@@ -52,9 +52,19 @@ _dispatcher: Dispatcher | None = None
 def dispatcher() -> Dispatcher:
     global _dispatcher
     if _dispatcher is None:
-        _dispatcher = Dispatcher(ontology=load(tenant=""), transport=_DemoTransport(),
+        from kingdee_console.ontology_editor import DEMO_PROFILE, ensure_profile
+        ensure_profile(DEMO_PROFILE)
+        _dispatcher = Dispatcher(ontology=load(tenant=DEMO_PROFILE), transport=_DemoTransport(),
                                  actor="console-demo")
     return _dispatcher
+
+
+def reset_dispatcher() -> None:
+    """Ontology 编辑器改了 profile.yml 之后调这个——`load()` 的 lru_cache
+    已经在 ontology_editor.add_link() 里清过了，但这里缓存的 Dispatcher
+    实例还攥着旧的 Ontology 对象，不重建看不到新写的下推关系。"""
+    global _dispatcher
+    _dispatcher = None
 
 
 def ontology() -> Ontology:

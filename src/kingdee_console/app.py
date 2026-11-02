@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from kingdee_console import tenancy
-from kingdee_console.routers import a2a, chat, dashboard, events
+from kingdee_console.routers import a2a, chat, dashboard, events, ontology
 
 
 @asynccontextmanager
@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(a2a.router)
     app.include_router(events.router)
+    app.include_router(ontology.router)
 
     @app.get("/api/health")
     async def health() -> dict:

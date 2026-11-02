@@ -5,8 +5,10 @@ import type {
   CatalogResponse,
   Conversation,
   Message,
+  OntologyGraph,
   Role,
   Tenant,
+  ToolCallEvent,
 } from './types'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -73,4 +75,38 @@ export const api = {
       body: JSON.stringify({ from_assistant_id, to_assistant_id, verb, noun }),
     }),
   a2aLog: () => req<A2AAuditRow[]>('/a2a/log'),
+
+  ontologyGraph: () => req<OntologyGraph>('/ontology/graph'),
+  addOntologyLink: (source: string, target: string, zh: string) =>
+    req<unknown>('/ontology/links', { method: 'POST', body: JSON.stringify({ source, target, zh }) }),
+}
+
+/** 订阅工具调用事件流——节点流向动效的数据源。断线每 2s 自动重连。 */
+export function connectEventStream(onEvent: (event: ToolCallEvent) => void): () => void {
+  let ws: WebSocket | null = null
+  let closed = false
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+  const connect = () => {
+    if (closed) return
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    ws = new WebSocket(`${proto}://${window.location.host}/api/events/stream`)
+    ws.onmessage = (ev) => {
+      try {
+        onEvent(JSON.parse(ev.data) as ToolCallEvent)
+      } catch {
+        // 忽略解析不出来的消息，不影响其它事件
+      }
+    }
+    ws.onclose = () => {
+      if (!closed) retryTimer = setTimeout(connect, 2000)
+    }
+  }
+  connect()
+
+  return () => {
+    closed = true
+    if (retryTimer) clearTimeout(retryTimer)
+    ws?.close()
+  }
 }

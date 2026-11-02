@@ -110,3 +110,33 @@ export interface A2AResult {
     capabilities: CapabilityTag[]
   }
 }
+
+export interface OntologyNode {
+  id: string
+  label: string
+  category: string
+  color: Color
+  allowed_verbs: string[]
+}
+
+export interface OntologyEdge {
+  id: string
+  source: string
+  target: string
+  label: string
+  verified: string
+}
+
+export interface OntologyGraph {
+  nodes: OntologyNode[]
+  edges: OntologyEdge[]
+  active_profile: string
+}
+
+export interface ToolCallEvent {
+  tool: string
+  source: 'chat' | 'direct' | 'a2a'
+  capability_tags: CapabilityTag[]
+  ok: boolean
+  at: number
+}
