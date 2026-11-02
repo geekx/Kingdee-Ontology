@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS tenants (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     profile TEXT NOT NULL DEFAULT '',
+    -- 指向这个租户的 .env 凭据文件路径（部署这台机器的文件系统上，从不是
+    -- 文件内容本身）——真实多账套 A2A 给子进程注入 KINGDEE_ENV_FILE 用，
+    -- 见 tenant_pool.py。sqlite 里从不存账号密码本身。
+    env_file TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

@@ -15,6 +15,12 @@ npm install
 npm run dev                     # http://localhost:5173，/api 已代理到 8787
 ```
 
+或者直接 Docker（仓库根目录，前端会被打包进镜像）：
+
+```bash
+docker compose --profile console up -d --build   # http://localhost:8787
+```
+
 对话窗口要调用 Claude 做意图识别，需要设 `ANTHROPIC_API_KEY`（启动后端前
 `export` 即可）；没配时对话会优雅降级成一条"意图识别暂时不可用"的提示，
 Dashboard 的能力目录、租户/角色/助理管理、A2A demo 不受影响。

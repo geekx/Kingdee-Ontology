@@ -229,9 +229,15 @@ docker build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ -
 把结果反推成按名词类别上色的"能力标签"展示出来。
 
 ```bash
+# 本地开发（前后端分离，热重载）
 pip install -e ".[console]"
 kingdee-console                 # 默认演示模式（KINGDEE_CONSOLE_DEMO），不连真账套
 cd frontend/kingdee-console && npm install && npm run dev
+
+# Docker（前端打包进镜像，一个容器端到端）
+docker compose --profile console up -d --build
+# 浏览器打开 http://<宿主机IP>:8787；默认演示模式，想接真账套取消
+# docker-compose.yml 里 kingdee-console 服务的 env_file/KINGDEE_CONSOLE_DEMO 注释
 ```
 
 - **Dashboard**：能力矩阵（14 个动词 × 86+ 名词，按单据/基础资料/视图/系统
@@ -241,11 +247,18 @@ cd frontend/kingdee-console && npm install && npm run dev
   另造一套 DSL）选工具、填参数 → 执行结果里的 verb/noun 反推出能力标签，
   在消息上显示成颜色 chip；每个助理挂一份对话历史，可重命名/删除。
   没配 `ANTHROPIC_API_KEY` 时优雅降级，不影响 Dashboard 其它功能。
-- **多租户 / A2A 骨架**：Tenant/Role/Assistant 三层模型，角色决定能碰哪些
-  名词（RBAC）；A2A 请求按**被问的那个助理**的角色判权限，返回结构化结果
-  和执行者信息，但从不把金蝶账套凭据带过去——这条隔离线跟浏览器/对话界面
-  到控制台后端是同一条。当前只打通同租户下的跨角色场景，真正的多账套
-  同时在线留给后续迭代。
+- **Ontology 图谱**：86 个名词按类别上色摆成节点图，9 条下推关系是边；
+  订阅后端的工具调用事件流（WebSocket），对话/直接调用/A2A 任意一条路径
+  真正执行了什么，对应节点就亮一下、下推类调用还会在源单→目标单之间画一条
+  动态的流动边——不是另一套状态，是同一次调用的实时镜像。节点编辑器可以
+  新增下推关系（写进当前 profile 覆盖层，不碰底座 registry.yml）。
+- **真·多账套 A2A**：Tenant/Role/Assistant 三层模型，角色决定能碰哪些
+  名词（RBAC），租户决定连哪个账套。`tenant_pool.py` 按**被问的那个助理**
+  所属租户挑网关——demo 模式下每个租户各自一套独立示例数据（不是同一份
+  数据换权限视角），真实模式下每个租户是独立子进程 + 独立 `.env` 凭据
+  文件（凭据内容从不进 sqlite，只存文件路径），空闲自动断开。A2A 请求
+  返回结构化结果和执行者信息，但从不把账套凭据带给发起方——这条隔离线
+  跟浏览器/对话界面到控制台后端是同一条。
 
 详见 `frontend/kingdee-console/README.md`。
 

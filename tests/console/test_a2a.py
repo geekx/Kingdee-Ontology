@@ -55,6 +55,32 @@ def test_unknown_assistant_is_denied(seeded):
     assert result.reason == "助理不存在"
 
 
+def test_cross_tenant_a2a_gets_target_tenants_own_data(seeded):
+    """真·多账套：仓库助理 B 在另一个租户（DEMO_TENANT_B_ID），数据跟
+    租户 A 的仓库助理完全独立——这不是同一份数据按角色过滤出来的两个
+    视角，是两个账套。销售助理（租户 A）问仓库助理 B 要库存，应该拿到
+    B 账套自己的那条示例数据，不是 A 账套的两条。"""
+    result = asyncio.run(a2a.request(
+        tenancy.ASSISTANT_SALES_ID, tenancy.ASSISTANT_WAREHOUSE_B_ID, "query", "库存"))
+    assert result.ok is True
+    assert result.result["count"] == 1
+    rows = result.result["rows"]
+    assert rows[0]["FMaterialId.FNumber"] == "M-9001"       # B 账套独有的物料编码
+    assert result.provenance["executed_by"] == "仓库助理（B 账套）"
+
+
+def test_same_tenant_a2a_is_unaffected_by_other_tenants_cache(seeded):
+    """先问过 B 账套，再问回 A 账套的仓库助理，不能串数据——两个租户
+    各自缓存自己的网关，互不覆盖。"""
+    asyncio.run(a2a.request(tenancy.ASSISTANT_SALES_ID, tenancy.ASSISTANT_WAREHOUSE_B_ID,
+                            "query", "库存"))
+    result = asyncio.run(a2a.request(tenancy.ASSISTANT_SALES_ID, tenancy.ASSISTANT_WAREHOUSE_ID,
+                                     "query", "库存"))
+    assert result.ok is True
+    assert result.result["count"] == 2
+    assert {r["FMaterialId.FNumber"] for r in result.result["rows"]} == {"M-1001", "M-2007"}
+
+
 def test_every_request_is_audited_allowed_and_denied(seeded):
     gw = McpGateway()
     asyncio.run(a2a.request(tenancy.ASSISTANT_SALES_ID, tenancy.ASSISTANT_SALES_ID,

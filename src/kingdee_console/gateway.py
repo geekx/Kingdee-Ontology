@@ -44,7 +44,7 @@ def _demo_enabled(explicit: Optional[bool]) -> bool:
     return not os.environ.get("KINGDEE_USERNAME")
 
 
-def _unwrap(content: Any) -> dict[str, Any]:
+def unwrap_mcp_result(content: Any) -> dict[str, Any]:
     """FastMCP.call_tool(convert_result=True) 实测回的是
     (list[ContentBlock], structuredContent) 这个二元组——kd_* 工具的返回
     值是个 str（_fmt() 序列化好的 JSON），所以 structuredContent 形如
@@ -89,10 +89,19 @@ class McpGateway:
         return [ToolSchema(name=t.name, description=t.description or "",
                             input_schema=t.inputSchema or {}) for t in tools]
 
-    async def call_tool(self, name: str, arguments: dict) -> dict[str, Any]:
+    async def call_tool(self, name: str, arguments: dict, source: str = "direct") -> dict[str, Any]:
+        """source 只用于事件总线上标注这次调用是从哪来的
+        （chat/direct/a2a），不影响执行本身——三条调用路径
+        （对话、Dashboard 直接调用、A2A）都走这一个方法，
+        所以在这里统一广播，调用方不必各自记得发事件。
+        """
         from kingdee_ontology.base.server import mcp as base_mcp
         content = await base_mcp.call_tool(name, arguments)
-        return _unwrap(content)
+        result = unwrap_mcp_result(content)
+
+        from kingdee_console.events import publish_tool_call
+        publish_tool_call(self.ontology, name, result, source)
+        return result
 
     @property
     def ontology(self):

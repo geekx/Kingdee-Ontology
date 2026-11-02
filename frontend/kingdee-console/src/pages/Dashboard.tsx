@@ -19,18 +19,39 @@ function StatCard({ label, value }: { label: string; value: string | number }) {
 }
 
 function CapabilityGrid({ entries }: { entries: CapabilityEntry[] }) {
+  const [query, setQuery] = useState('')
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return entries
+    return entries.filter(
+      (e) =>
+        e.noun_zh.toLowerCase().includes(q) ||
+        e.noun.toLowerCase().includes(q) ||
+        e.verb_zh.toLowerCase().includes(q) ||
+        e.verb.toLowerCase().includes(q),
+    )
+  }, [entries, query])
+
   const byCategory = useMemo(() => {
     const groups = new Map<string, CapabilityEntry[]>()
-    for (const e of entries) {
+    for (const e of filtered) {
       const list = groups.get(e.category) ?? []
       list.push(e)
       groups.set(e.category, list)
     }
     return groups
-  }, [entries])
+  }, [filtered])
 
   return (
     <div className="space-y-6">
+      <input
+        className="w-full max-w-sm rounded border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800"
+        placeholder={`搜索名词/动词…（共 ${entries.length} 条）`}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {filtered.length === 0 && <p className="text-sm text-slate-400">没有匹配的能力</p>}
       {[...byCategory.entries()].map(([category, list]) => (
         <div key={category}>
           <h3
@@ -70,6 +91,7 @@ function TenancyPanel({
   onChanged: () => void
 }) {
   const [newTenant, setNewTenant] = useState('')
+  const [newTenantEnvFile, setNewTenantEnvFile] = useState('')
   const [newRole, setNewRole] = useState('')
   const [newRoleNouns, setNewRoleNouns] = useState('')
 
@@ -79,27 +101,39 @@ function TenancyPanel({
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
       <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-        <h4 className="mb-2 font-semibold">租户</h4>
+        <h4 className="mb-2 font-semibold">租户（账套）</h4>
         <ul className="mb-3 space-y-1 text-sm">
           {tenants.map((t) => (
             <li key={t.id}>
               {t.name} <span className="text-slate-400">({t.profile || '默认'})</span>
+              {t.env_file && (
+                <span className="ml-1 text-xs text-slate-400" title={t.env_file}>
+                  🔑
+                </span>
+              )}
             </li>
           ))}
         </ul>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2">
           <input
-            className="w-full rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
+            className="rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
             placeholder="新租户名"
             value={newTenant}
             onChange={(e) => setNewTenant(e.target.value)}
           />
+          <input
+            className="rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
+            placeholder="凭据文件路径（可选，真实多账套用，如 /secure/tenant-a.env）"
+            value={newTenantEnvFile}
+            onChange={(e) => setNewTenantEnvFile(e.target.value)}
+          />
           <button
-            className="rounded bg-slate-900 px-3 py-1 text-sm text-white dark:bg-slate-100 dark:text-slate-900"
+            className="self-start rounded bg-slate-900 px-3 py-1 text-sm text-white dark:bg-slate-100 dark:text-slate-900"
             onClick={async () => {
               if (!newTenant.trim()) return
-              await api.createTenant(newTenant.trim())
+              await api.createTenant(newTenant.trim(), '', newTenantEnvFile.trim())
               setNewTenant('')
+              setNewTenantEnvFile('')
               onChanged()
             }}
           >
@@ -164,13 +198,17 @@ function TenancyPanel({
 
 function A2APanel({ assistants }: { assistants: Assistant[] }) {
   const [log, setLog] = useState<A2AAuditRow[]>([])
+  const [logLimit, setLogLimit] = useState(20)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [noun, setNoun] = useState('库存')
   const [outcome, setOutcome] = useState<string>('')
 
   useEffect(() => {
-    api.a2aLog().then(setLog)
+    api.a2aLog(logLimit).then(setLog)
+  }, [logLimit])
+
+  useEffect(() => {
     if (assistants.length >= 2) {
       setFrom(assistants[0].id)
       setTo(assistants[1].id)
@@ -221,13 +259,26 @@ function A2APanel({ assistants }: { assistants: Assistant[] }) {
           onClick={async () => {
             const r = await api.a2aRequest(from, to, 'query', noun)
             setOutcome(r.ok ? `成功：由 ${r.provenance?.executed_by} 执行` : `拒绝：${r.reason}`)
-            setLog(await api.a2aLog())
+            setLog(await api.a2aLog(logLimit))
           }}
         >
           发起请求
         </button>
       </div>
       {outcome && <div className="mb-3 text-sm font-medium">{outcome}</div>}
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs text-slate-400">最近 {log.length} 条</span>
+        <select
+          className="rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+          value={logLimit}
+          onChange={(e) => setLogLimit(Number(e.target.value))}
+        >
+          <option value={20}>显示 20 条</option>
+          <option value={50}>显示 50 条</option>
+          <option value={100}>显示 100 条</option>
+          <option value={500}>显示 500 条</option>
+        </select>
+      </div>
       <table className="w-full text-left text-xs">
         <thead className="text-slate-400">
           <tr>

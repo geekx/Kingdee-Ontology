@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+#
+# 控制台容器镜像（Dashboard + 对话窗口）—— 跟金蝶 MCP Server 本体镜像
+# （仓库根目录的 Dockerfile）是两个不同的东西：这个镜像跑的是
+# kingdee_console（FastAPI + 打包好的前端静态资源），不是 MCP 协议服务端，
+# 给人在浏览器里用，不是给 AI 客户端连的。
+#
+# 构建：
+#   docker build -f Dockerfile.console -t kingdee-console .
+#   # 国内网络慢可换源：
+#   docker build -f Dockerfile.console \
+#     --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+#     --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
+#     -t kingdee-console .
+#
+# 运行（默认演示模式，不连真账套，开箱可看）：
+#   docker run --rm -p 8787:8787 kingdee-console
+#   浏览器打开 http://<宿主机IP>:8787
+#
+# 运行（接真实账套 + 对话窗口的意图识别）：
+#   docker run --rm -p 8787:8787 --env-file .env \
+#     -e KINGDEE_CONSOLE_DEMO=0 -e ANTHROPIC_API_KEY=sk-... kingdee-console
+
+# ── 阶段一：构建前端静态资源 ──────────────────────────────────────
+FROM node:20-slim AS frontend
+WORKDIR /app
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm config set registry "${NPM_REGISTRY}"
+COPY frontend/kingdee-console/package.json frontend/kingdee-console/package-lock.json ./
+RUN npm ci
+COPY frontend/kingdee-console/ ./
+RUN npm run build
+
+# ── 阶段二：Python 运行时 ──────────────────────────────────────────
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+# 只拷贝打包必需的文件，改前端代码不会让 Python 依赖层缓存失效
+COPY pyproject.toml README.md LICENSE ./
+COPY src/ ./src/
+# force-include 把 profiles/ 下的示例租户配置打进 wheel（见 pyproject.toml），
+# 构建期就要能找到这些文件，否则 pip install 直接 FileNotFoundError。
+COPY profiles/ ./profiles/
+
+RUN pip install --index-url "${PIP_INDEX_URL}" ".[console]"
+
+COPY --from=frontend /app/dist ./static/console
+
+RUN useradd --create-home --uid 10001 console
+USER console
+
+ENV KINGDEE_CONSOLE_STATIC_DIR=/app/static/console \
+    KINGDEE_CONSOLE_HOST=0.0.0.0 \
+    KINGDEE_CONSOLE_PORT=8787 \
+    KINGDEE_CONSOLE_DB=/home/console/kingdee_console.db
+
+EXPOSE 8787
+
+ENTRYPOINT ["kingdee-console"]

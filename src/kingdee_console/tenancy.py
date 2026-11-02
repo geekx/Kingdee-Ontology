@@ -7,9 +7,11 @@
 
     Tenant（租户）   —— 一个金蝶账套。字段 `profile` 对应
                         profiles/<profile>/profile.yml（见
-                        kingdee_ontology.base.ontology.profile_roots）。
-                        这次先只打通同租户下的角色隔离，真正的"多账套
-                        同时在线"留给 gateway.py 的 tenant 参数接后续。
+                        kingdee_ontology.base.ontology.profile_roots）；
+                        `env_file` 指向这个租户的 KINGDEE_* 凭据文件路径
+                        （部署机器的文件系统上，内容从不进 sqlite）——
+                        tenant_pool.py 给这个租户的子进程注入
+                        KINGDEE_ENV_FILE 用，真正做到"多账套同时在线"。
     Role（角色）     —— 业务归口的权限边界：这个角色能碰哪些名词
                         （allowed_nouns，form_id 集合）。动词层面的
                         允许/禁止仍然由本体自己的 allowed_verbs 兜底——
@@ -38,9 +40,11 @@ class Tenant:
     id: str
     name: str
     profile: str = ""
+    env_file: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "profile": self.profile}
+        return {"id": self.id, "name": self.name, "profile": self.profile,
+                "env_file": self.env_file}
 
 
 @dataclass(frozen=True)
@@ -69,11 +73,12 @@ class Assistant:
                 "tenant_id": self.tenant_id, "role_id": self.role_id}
 
 
-def create_tenant(name: str, profile: str = "", id: Optional[str] = None) -> Tenant:
-    t = Tenant(id=id or str(uuid.uuid4()), name=name, profile=profile)
+def create_tenant(name: str, profile: str = "", env_file: str = "",
+                  id: Optional[str] = None) -> Tenant:
+    t = Tenant(id=id or str(uuid.uuid4()), name=name, profile=profile, env_file=env_file)
     with connect() as c:
-        c.execute("INSERT INTO tenants (id, name, profile) VALUES (?, ?, ?)",
-                  (t.id, t.name, t.profile))
+        c.execute("INSERT INTO tenants (id, name, profile, env_file) VALUES (?, ?, ?, ?)",
+                  (t.id, t.name, t.profile, t.env_file))
         c.commit()
     return t
 
@@ -100,7 +105,8 @@ def create_assistant(name: str, tenant_id: str, role_id: str,
 def list_tenants() -> list[Tenant]:
     with connect() as c:
         rows = c.execute("SELECT * FROM tenants ORDER BY created_at").fetchall()
-    return [Tenant(id=r["id"], name=r["name"], profile=r["profile"]) for r in rows]
+    return [Tenant(id=r["id"], name=r["name"], profile=r["profile"], env_file=r["env_file"])
+            for r in rows]
 
 
 def list_roles() -> list[Role]:
@@ -138,28 +144,39 @@ def get_tenant(tenant_id: str) -> Optional[Tenant]:
         r = c.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
     if r is None:
         return None
-    return Tenant(id=r["id"], name=r["name"], profile=r["profile"])
+    return Tenant(id=r["id"], name=r["name"], profile=r["profile"], env_file=r["env_file"])
 
 
 # ── 演示种子数据 —— 固定 id，方便测试/前端直接引用 ────────────────
 DEMO_TENANT_ID = "tenant-demo"
+# 第二个租户：不是同租户换角色，是**换账套**——跟 DEMO_TENANT_ID 的数据
+# 完全独立（见 demo_data.py 的 _ALT_SAMPLE_ROWS），证明 A2A 跨租户时
+# 拿到的是目标租户自己的数据，不是同一份数据换了个权限视角。
+DEMO_TENANT_B_ID = "tenant-demo-b"
 ROLE_SALES_ID = "role-sales"
 ROLE_WAREHOUSE_ID = "role-warehouse"
 ASSISTANT_SALES_ID = "assistant-sales"
 ASSISTANT_WAREHOUSE_ID = "assistant-warehouse"
+ASSISTANT_WAREHOUSE_B_ID = "assistant-warehouse-b"
 
 
 def ensure_seed_data() -> None:
-    """幂等地种一套演示数据：一个租户 + 销售/仓库两个角色 + 各一个助理。
+    """幂等地种一套演示数据：两个租户（演示真·多账套隔离）+
+    销售/仓库两个角色（角色跨租户复用，同一套权限定义） + 三个助理。
 
-    销售助理只被授权碰 SAL_SaleOrder（销售订单，销售口径）；
-    仓库助理只被授权碰 STK_Inventory（即时库存，仓库口径）——
+    销售助理（租户 A）只被授权碰 SAL_SaleOrder（销售订单，销售口径）；
+    仓库助理（租户 A）只被授权碰 STK_Inventory（即时库存，仓库口径）——
     两边业务归口刻意不同，用来演示 a2a.py 里"问别的角色借数据"的场景。
+    仓库助理 B（租户 B，另一个账套）跟仓库助理同角色、不同租户——
+    演示"同角色不同账套"时数据真的不一样（见 test_tenant_pool.py）。
     """
     if get_tenant(DEMO_TENANT_ID) is not None:
         return
-    create_tenant("演示租户", profile="", id=DEMO_TENANT_ID)
+    create_tenant("演示租户 A", profile="", id=DEMO_TENANT_ID)
+    create_tenant("演示租户 B（另一个账套）", profile="", id=DEMO_TENANT_B_ID)
     create_role("销售", ["SAL_SaleOrder"], id=ROLE_SALES_ID)
     create_role("仓库", ["STK_Inventory"], id=ROLE_WAREHOUSE_ID)
     create_assistant("销售助理", DEMO_TENANT_ID, ROLE_SALES_ID, id=ASSISTANT_SALES_ID)
     create_assistant("仓库助理", DEMO_TENANT_ID, ROLE_WAREHOUSE_ID, id=ASSISTANT_WAREHOUSE_ID)
+    create_assistant("仓库助理（B 账套）", DEMO_TENANT_B_ID, ROLE_WAREHOUSE_ID,
+                     id=ASSISTANT_WAREHOUSE_B_ID)

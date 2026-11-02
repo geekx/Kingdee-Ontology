@@ -1,10 +1,12 @@
-# 金蝶云星空 MCP Server —— 两条命令起服务
+# 金蝶云星空 MCP Server + 控制台 —— 两条命令起服务
 # 第三方开源项目，非金蝶官方出品。
 #
 #   1) cp .env.example .env     # 然后把 4 个 KINGDEE_* 填上
-#   2) docker compose up -d
+#   2) docker compose up -d                 # 只起 MCP 服务端
+#      docker compose --profile console up -d   # 连控制台一起起
 #
-# 起来之后，MCP 客户端连： http://<宿主机IP>:8000/mcp
+# MCP 服务端：MCP 客户端连 http://<宿主机IP>:8000/mcp
+# 控制台：浏览器打开 http://<宿主机IP>:8787
 # 看日志： docker compose logs -f
 # 验配置： docker compose run --rm kingdee-mcp --check
 
@@ -31,3 +33,31 @@ services:
 
     ports:
       - "8000:8000"
+
+  # Dashboard + 对话窗口，给人在浏览器里用；跟上面的 MCP 服务端是两回事，
+  # 平时不需要就不用起——放进 `console` profile，默认 `docker compose up`
+  # 不会带上它。
+  kingdee-console:
+    profiles: ["console"]
+    build:
+      context: .
+      dockerfile: Dockerfile.console
+      args:
+        PIP_INDEX_URL: https://pypi.org/simple
+        NPM_REGISTRY: https://registry.npmjs.org
+    image: kingdee-console:local
+    container_name: kingdee-console
+    restart: unless-stopped
+
+    # 不配 .env 也能起来——默认演示模式，不连真账套；要接真实账套就取消
+    # 下面这行注释（同一份 .env 两边共用）。对话窗口要额外有 ANTHROPIC_API_KEY。
+    # env_file:
+    #   - .env
+
+    environment:
+      KINGDEE_CONSOLE_HOST: 0.0.0.0
+      KINGDEE_CONSOLE_PORT: "8787"
+      # KINGDEE_CONSOLE_DEMO: "0"   # 取消注释 = 接真实账套，前提是配了 .env
+
+    ports:
+      - "8787:8787"

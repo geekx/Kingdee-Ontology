@@ -7,8 +7,8 @@ from kingdee_console import tenancy
 def test_ensure_seed_data_is_idempotent(console_database):
     tenancy.ensure_seed_data()
     tenancy.ensure_seed_data()
-    assert len(tenancy.list_tenants()) == 1
-    assert len(tenancy.list_assistants()) == 2
+    assert len(tenancy.list_tenants()) == 2     # 两个账套，演示真·多租户隔离
+    assert len(tenancy.list_assistants()) == 3
 
 
 def test_role_can_only_checks_allowlist(seeded):
