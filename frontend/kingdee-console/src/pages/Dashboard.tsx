@@ -70,6 +70,7 @@ function TenancyPanel({
   onChanged: () => void
 }) {
   const [newTenant, setNewTenant] = useState('')
+  const [newTenantEnvFile, setNewTenantEnvFile] = useState('')
   const [newRole, setNewRole] = useState('')
   const [newRoleNouns, setNewRoleNouns] = useState('')
 
@@ -79,27 +80,39 @@ function TenancyPanel({
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
       <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-        <h4 className="mb-2 font-semibold">租户</h4>
+        <h4 className="mb-2 font-semibold">租户（账套）</h4>
         <ul className="mb-3 space-y-1 text-sm">
           {tenants.map((t) => (
             <li key={t.id}>
               {t.name} <span className="text-slate-400">({t.profile || '默认'})</span>
+              {t.env_file && (
+                <span className="ml-1 text-xs text-slate-400" title={t.env_file}>
+                  🔑
+                </span>
+              )}
             </li>
           ))}
         </ul>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2">
           <input
-            className="w-full rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
+            className="rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
             placeholder="新租户名"
             value={newTenant}
             onChange={(e) => setNewTenant(e.target.value)}
           />
+          <input
+            className="rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
+            placeholder="凭据文件路径（可选，真实多账套用，如 /secure/tenant-a.env）"
+            value={newTenantEnvFile}
+            onChange={(e) => setNewTenantEnvFile(e.target.value)}
+          />
           <button
-            className="rounded bg-slate-900 px-3 py-1 text-sm text-white dark:bg-slate-100 dark:text-slate-900"
+            className="self-start rounded bg-slate-900 px-3 py-1 text-sm text-white dark:bg-slate-100 dark:text-slate-900"
             onClick={async () => {
               if (!newTenant.trim()) return
-              await api.createTenant(newTenant.trim())
+              await api.createTenant(newTenant.trim(), '', newTenantEnvFile.trim())
               setNewTenant('')
+              setNewTenantEnvFile('')
               onChanged()
             }}
           >

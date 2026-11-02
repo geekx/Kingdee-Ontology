@@ -33,8 +33,8 @@ export const api = {
     }),
 
   tenants: () => req<Tenant[]>('/tenants'),
-  createTenant: (name: string, profile = '') =>
-    req<Tenant>('/tenants', { method: 'POST', body: JSON.stringify({ name, profile }) }),
+  createTenant: (name: string, profile = '', env_file = '') =>
+    req<Tenant>('/tenants', { method: 'POST', body: JSON.stringify({ name, profile, env_file }) }),
 
   roles: () => req<Role[]>('/roles'),
   createRole: (name: string, allowed_nouns: string[]) =>

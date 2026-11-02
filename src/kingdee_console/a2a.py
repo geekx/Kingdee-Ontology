@@ -23,7 +23,8 @@ from typing import Any, Optional
 from kingdee_console import tenancy
 from kingdee_console.catalog import tags_from_dispatch_result
 from kingdee_console.db import connect
-from kingdee_console.gateway import McpGateway
+from kingdee_console.gateway import default_gateway
+from kingdee_console.tenant_pool import TenantGateway, pool
 
 
 @dataclass
@@ -54,12 +55,15 @@ def _log(trace_id: str, from_id: str, to_id: str, verb: str, noun: str,
 
 
 async def request(from_assistant_id: str, to_assistant_id: str, verb: str, noun: str,
-                  args: Optional[dict] = None, gateway: Optional[McpGateway] = None) -> A2AResult:
+                  args: Optional[dict] = None, gateway: Optional[TenantGateway] = None) -> A2AResult:
     """from_assistant 向 to_assistant 发起一次跨业务归口的能力请求。
 
-    权限只按 noun 的 form_id 判断，所以这里先用 to_assistant 自己那套
-    本体把 noun（可能是中文名/别名）解析成 form_id，再查角色允许表——
-    不能让"用别名绕过角色白名单"成为一个漏洞。
+    真正按 to_assistant 所属**租户**路由——不是不管哪个租户都用同一个
+    共享连接，是 tenant_pool 按 to_assistant.tenant_id 给出那个租户
+    自己的网关（demo 模式下是独立的示例数据集，真实模式下是独立的
+    子进程 + 独立账套凭据）。权限只按 noun 的 form_id 判断，所以这里
+    先用 to_assistant 所在租户的本体把 noun（可能是中文名/别名）解析成
+    form_id，再查角色允许表——不能让"用别名绕过角色白名单"成为一个漏洞。
     """
     trace_id = str(uuid.uuid4())
     from_a = tenancy.get_assistant(from_assistant_id)
@@ -68,7 +72,12 @@ async def request(from_assistant_id: str, to_assistant_id: str, verb: str, noun:
         _log(trace_id, from_assistant_id, to_assistant_id, verb, noun, False, "助理不存在")
         return A2AResult(ok=False, trace_id=trace_id, reason="助理不存在")
 
-    gw = gateway or McpGateway()
+    to_tenant = tenancy.get_tenant(to_a.tenant_id)
+    if to_tenant is None:
+        _log(trace_id, from_assistant_id, to_assistant_id, verb, noun, False, "目标助理所属租户不存在")
+        return A2AResult(ok=False, trace_id=trace_id, reason="目标助理所属租户不存在")
+
+    gw = gateway or pool.get(to_tenant, demo=default_gateway().demo)
     try:
         resolved = gw.ontology.resolve_noun(noun)
     except Exception as e:

@@ -37,34 +37,75 @@ _SAMPLE_ROWS: dict[str, list[dict]] = {
 }
 
 
-class _DemoTransport(FakeTransport):
-    """按 form_id 分发预置示例行；查不到的名词给空列表，而不是报错。"""
+# 第二套示例数据——演示"真·多账套"：跟 _SAMPLE_ROWS 不是同一份数据换了
+# 权限视角，是完全独立的另一个账套（见 tenancy.DEMO_TENANT_B_ID）。
+_ALT_SAMPLE_ROWS: dict[str, list[dict]] = {
+    "STK_Inventory": [
+        {"FMaterialId.FNumber": "M-9001", "FMaterialId.FName": "液压油缸",
+         "FStockId.FName": "B 账套仓库", "FStockLocId.FName": "C-02-01",
+         "FBaseQty": 320, "FUnitId.FName": "个"},
+    ],
+    "SAL_SaleOrder": [
+        {"FID": 20002, "FBillNo": "XSDD000777", "FDate": "2026-10-28",
+         "FDocumentStatus": "C", "FCustId.FName": "B 账套客户",
+         "FSalesOrgId.FName": "B 账套销售组织", "FTotalAmount": 9900.0,
+         "FLinkQty": 10, "FStockOutQty": 10, "FDeliQty": 10},
+    ],
+}
 
-    async def query(self, form_id: str, fields: str, filter_string: str, top: int) -> Any:
-        self.calls.append(("query", form_id,
-                           {"filter": filter_string, "top": top, "fields": fields}))
-        return list(_SAMPLE_ROWS.get(form_id, []))[:top]
+
+def _make_transport(sample_rows: dict[str, list[dict]]) -> FakeTransport:
+    class _DemoTransport(FakeTransport):
+        """按 form_id 分发预置示例行；查不到的名词给空列表，而不是报错。"""
+
+        async def query(self, form_id: str, fields: str, filter_string: str, top: int) -> Any:
+            self.calls.append(("query", form_id,
+                               {"filter": filter_string, "top": top, "fields": fields}))
+            return list(sample_rows.get(form_id, []))[:top]
+
+    return _DemoTransport()
 
 
-_dispatcher: Dispatcher | None = None
+_tenant_dispatchers: dict[str, Dispatcher] = {}
+_DEFAULT_KEY = "__default__"
+
+
+def dispatcher_for_tenant(tenant_id: str, profile: str, alt_dataset: bool = False) -> Dispatcher:
+    """每个租户一份独立的 Dispatcher + 示例数据——不是共享一份数据按角色
+    过滤，是真的两份数据，用来证明"跨租户的 A2A 拿到的是目标租户自己的
+    数据"而不是同一份数据换了个权限视角。"""
+    if tenant_id not in _tenant_dispatchers:
+        from kingdee_console.ontology_editor import ensure_profile
+        if profile:
+            ensure_profile(profile)
+        rows = _ALT_SAMPLE_ROWS if alt_dataset else _SAMPLE_ROWS
+        _tenant_dispatchers[tenant_id] = Dispatcher(
+            ontology=load(tenant=profile), transport=_make_transport(rows),
+            actor=f"console-demo:{tenant_id}")
+    return _tenant_dispatchers[tenant_id]
+
+
+def reset_tenant_dispatcher(tenant_id: str) -> None:
+    _tenant_dispatchers.pop(tenant_id, None)
+
+
+def reset_all_dispatchers() -> None:
+    """测试用：清掉所有租户的缓存 Dispatcher，不止默认那一个。"""
+    _tenant_dispatchers.clear()
 
 
 def dispatcher() -> Dispatcher:
-    global _dispatcher
-    if _dispatcher is None:
-        from kingdee_console.ontology_editor import DEMO_PROFILE, ensure_profile
-        ensure_profile(DEMO_PROFILE)
-        _dispatcher = Dispatcher(ontology=load(tenant=DEMO_PROFILE), transport=_DemoTransport(),
-                                 actor="console-demo")
-    return _dispatcher
+    """控制台自己（单租户视角：Dashboard/对话/直接调用）用的默认 Dispatcher——
+    等价于 tenancy.DEMO_TENANT_ID 那个租户。"""
+    from kingdee_console.ontology_editor import DEMO_PROFILE
+    return dispatcher_for_tenant(_DEFAULT_KEY, DEMO_PROFILE)
 
 
 def reset_dispatcher() -> None:
     """Ontology 编辑器改了 profile.yml 之后调这个——`load()` 的 lru_cache
     已经在 ontology_editor.add_link() 里清过了，但这里缓存的 Dispatcher
     实例还攥着旧的 Ontology 对象，不重建看不到新写的下推关系。"""
-    global _dispatcher
-    _dispatcher = None
+    reset_tenant_dispatcher(_DEFAULT_KEY)
 
 
 def ontology() -> Ontology:

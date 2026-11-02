@@ -46,6 +46,7 @@ export interface Tenant {
   id: string
   name: string
   profile: string
+  env_file: string
 }
 
 export interface Role {

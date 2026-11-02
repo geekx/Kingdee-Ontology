@@ -18,18 +18,19 @@ def console_database(tmp_path, monkeypatch):
     monkeypatch.setenv("KINGDEE_CONSOLE_DB", str(path))
     console_db.reset_cache()
 
-    # demo_data._dispatcher 是模块级单例，演示 profile 目录又是从
-    # KINGDEE_CONSOLE_DB 的目录派生的（见 ontology_editor.runtime_profiles_dir）——
-    # 不清掉的话，这个测试会拿到上一个测试（不同 tmp_path）缓存出来的
-    # Dispatcher/Ontology，看不见自己这份干净的 profile。
+    # demo_data 的 Dispatcher 缓存是模块级单例（按租户 id 缓存），演示
+    # profile 目录又是从 KINGDEE_CONSOLE_DB 的目录派生的（见
+    # ontology_editor.runtime_profiles_dir）——不清掉的话，这个测试会拿到
+    # 上一个测试（不同 tmp_path）缓存出来的 Dispatcher/Ontology，看不见
+    # 自己这份干净的 profile。
     from kingdee_console import demo_data
     from kingdee_ontology.base.ontology import load as ontology_load
-    demo_data.reset_dispatcher()
+    demo_data.reset_all_dispatchers()
     ontology_load.cache_clear()
 
     yield path
     console_db.reset_cache()
-    demo_data.reset_dispatcher()
+    demo_data.reset_all_dispatchers()
     ontology_load.cache_clear()
 
 

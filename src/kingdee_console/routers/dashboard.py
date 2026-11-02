@@ -66,11 +66,12 @@ async def get_assistants() -> list[dict[str, Any]]:
 class CreateTenantInput(BaseModel):
     name: str
     profile: str = ""
+    env_file: str = ""
 
 
 @router.post("/tenants")
 async def create_tenant(body: CreateTenantInput) -> dict[str, Any]:
-    return tenancy.create_tenant(body.name, body.profile).to_dict()
+    return tenancy.create_tenant(body.name, body.profile, body.env_file).to_dict()
 
 
 class CreateRoleInput(BaseModel):

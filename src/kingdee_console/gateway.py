@@ -44,7 +44,7 @@ def _demo_enabled(explicit: Optional[bool]) -> bool:
     return not os.environ.get("KINGDEE_USERNAME")
 
 
-def _unwrap(content: Any) -> dict[str, Any]:
+def unwrap_mcp_result(content: Any) -> dict[str, Any]:
     """FastMCP.call_tool(convert_result=True) 实测回的是
     (list[ContentBlock], structuredContent) 这个二元组——kd_* 工具的返回
     值是个 str（_fmt() 序列化好的 JSON），所以 structuredContent 形如
@@ -97,16 +97,10 @@ class McpGateway:
         """
         from kingdee_ontology.base.server import mcp as base_mcp
         content = await base_mcp.call_tool(name, arguments)
-        result = _unwrap(content)
+        result = unwrap_mcp_result(content)
 
-        from kingdee_console.catalog import tags_from_dispatch_result
-        from kingdee_console.events import ToolCallEvent, bus
-        ok = not (isinstance(result, dict) and result.get("ok") is False)
-        tags = tags_from_dispatch_result(self.ontology, name, result)
-        bus.publish(ToolCallEvent(
-            tool=name, source=source, ok=ok,
-            capability_tags=[t.to_dict() for t in tags],
-        ))
+        from kingdee_console.events import publish_tool_call
+        publish_tool_call(self.ontology, name, result, source)
         return result
 
     @property

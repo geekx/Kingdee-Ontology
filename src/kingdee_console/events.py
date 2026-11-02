@@ -27,6 +27,17 @@ class ToolCallEvent:
                 "capability_tags": self.capability_tags, "ok": self.ok, "at": self.at}
 
 
+def publish_tool_call(ontology: Any, tool: str, result: dict, source: str) -> None:
+    """三条网关实现（McpGateway / TenantDemoGateway / SubprocessTenantGateway）
+    都调这一个函数广播事件——能力标签的反推规则只写一遍。"""
+    from kingdee_console.catalog import tags_from_dispatch_result
+
+    ok = not (isinstance(result, dict) and result.get("ok") is False)
+    tags = tags_from_dispatch_result(ontology, tool, result)
+    bus.publish(ToolCallEvent(tool=tool, source=source, ok=ok,
+                              capability_tags=[t.to_dict() for t in tags]))
+
+
 class EventBus:
     """进程内发布/订阅——控制台是单进程部署，不需要 Redis 之类的外部总线。"""
 
