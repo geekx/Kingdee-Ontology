@@ -89,11 +89,11 @@ async def request(from_assistant_id: str, to_assistant_id: str, verb: str, noun:
     if verb == "query":
         params = {"noun": resolved.form_id, "filter": call_args.get("filter", ""),
                  "fields": call_args.get("fields", ""), "top": call_args.get("top", 50)}
-        result = await gw.call_tool("kd_query", {"params": params})
+        result = await gw.call_tool("kd_query", {"params": params}, source="a2a")
         tool_name = "kd_query"
     else:
         params = {"verb": verb, "noun": resolved.form_id, **call_args}
-        result = await gw.call_tool("kd_act", {"params": params})
+        result = await gw.call_tool("kd_act", {"params": params}, source="a2a")
         tool_name = "kd_act"
 
     _log(trace_id, from_assistant_id, to_assistant_id, verb, resolved.form_id, True, "")

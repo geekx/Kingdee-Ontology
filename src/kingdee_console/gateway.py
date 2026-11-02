@@ -89,10 +89,25 @@ class McpGateway:
         return [ToolSchema(name=t.name, description=t.description or "",
                             input_schema=t.inputSchema or {}) for t in tools]
 
-    async def call_tool(self, name: str, arguments: dict) -> dict[str, Any]:
+    async def call_tool(self, name: str, arguments: dict, source: str = "direct") -> dict[str, Any]:
+        """source 只用于事件总线上标注这次调用是从哪来的
+        （chat/direct/a2a），不影响执行本身——三条调用路径
+        （对话、Dashboard 直接调用、A2A）都走这一个方法，
+        所以在这里统一广播，调用方不必各自记得发事件。
+        """
         from kingdee_ontology.base.server import mcp as base_mcp
         content = await base_mcp.call_tool(name, arguments)
-        return _unwrap(content)
+        result = _unwrap(content)
+
+        from kingdee_console.catalog import tags_from_dispatch_result
+        from kingdee_console.events import ToolCallEvent, bus
+        ok = not (isinstance(result, dict) and result.get("ok") is False)
+        tags = tags_from_dispatch_result(self.ontology, name, result)
+        bus.publish(ToolCallEvent(
+            tool=name, source=source, ok=ok,
+            capability_tags=[t.to_dict() for t in tags],
+        ))
+        return result
 
     @property
     def ontology(self):

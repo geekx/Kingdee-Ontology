@@ -97,7 +97,7 @@ class IntentEngine:
             tool_results = []
             for use in tool_uses:
                 args = dict(use.input or {})
-                result = await self.gateway.call_tool(use.name, args)
+                result = await self.gateway.call_tool(use.name, args, source="chat")
                 tags = tags_from_dispatch_result(self.gateway.ontology, use.name, result)
                 invocations.append(ToolInvocation(
                     tool=use.name, args=args, result=result,

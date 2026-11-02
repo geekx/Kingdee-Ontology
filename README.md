@@ -229,9 +229,15 @@ docker build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ -
 把结果反推成按名词类别上色的"能力标签"展示出来。
 
 ```bash
+# 本地开发（前后端分离，热重载）
 pip install -e ".[console]"
 kingdee-console                 # 默认演示模式（KINGDEE_CONSOLE_DEMO），不连真账套
 cd frontend/kingdee-console && npm install && npm run dev
+
+# Docker（前端打包进镜像，一个容器端到端）
+docker compose --profile console up -d --build
+# 浏览器打开 http://<宿主机IP>:8787；默认演示模式，想接真账套取消
+# docker-compose.yml 里 kingdee-console 服务的 env_file/KINGDEE_CONSOLE_DEMO 注释
 ```
 
 - **Dashboard**：能力矩阵（14 个动词 × 86+ 名词，按单据/基础资料/视图/系统
