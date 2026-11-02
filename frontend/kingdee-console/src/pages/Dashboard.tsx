@@ -19,18 +19,39 @@ function StatCard({ label, value }: { label: string; value: string | number }) {
 }
 
 function CapabilityGrid({ entries }: { entries: CapabilityEntry[] }) {
+  const [query, setQuery] = useState('')
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return entries
+    return entries.filter(
+      (e) =>
+        e.noun_zh.toLowerCase().includes(q) ||
+        e.noun.toLowerCase().includes(q) ||
+        e.verb_zh.toLowerCase().includes(q) ||
+        e.verb.toLowerCase().includes(q),
+    )
+  }, [entries, query])
+
   const byCategory = useMemo(() => {
     const groups = new Map<string, CapabilityEntry[]>()
-    for (const e of entries) {
+    for (const e of filtered) {
       const list = groups.get(e.category) ?? []
       list.push(e)
       groups.set(e.category, list)
     }
     return groups
-  }, [entries])
+  }, [filtered])
 
   return (
     <div className="space-y-6">
+      <input
+        className="w-full max-w-sm rounded border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800"
+        placeholder={`搜索名词/动词…（共 ${entries.length} 条）`}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {filtered.length === 0 && <p className="text-sm text-slate-400">没有匹配的能力</p>}
       {[...byCategory.entries()].map(([category, list]) => (
         <div key={category}>
           <h3
@@ -177,13 +198,17 @@ function TenancyPanel({
 
 function A2APanel({ assistants }: { assistants: Assistant[] }) {
   const [log, setLog] = useState<A2AAuditRow[]>([])
+  const [logLimit, setLogLimit] = useState(20)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [noun, setNoun] = useState('库存')
   const [outcome, setOutcome] = useState<string>('')
 
   useEffect(() => {
-    api.a2aLog().then(setLog)
+    api.a2aLog(logLimit).then(setLog)
+  }, [logLimit])
+
+  useEffect(() => {
     if (assistants.length >= 2) {
       setFrom(assistants[0].id)
       setTo(assistants[1].id)
@@ -234,13 +259,26 @@ function A2APanel({ assistants }: { assistants: Assistant[] }) {
           onClick={async () => {
             const r = await api.a2aRequest(from, to, 'query', noun)
             setOutcome(r.ok ? `成功：由 ${r.provenance?.executed_by} 执行` : `拒绝：${r.reason}`)
-            setLog(await api.a2aLog())
+            setLog(await api.a2aLog(logLimit))
           }}
         >
           发起请求
         </button>
       </div>
       {outcome && <div className="mb-3 text-sm font-medium">{outcome}</div>}
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs text-slate-400">最近 {log.length} 条</span>
+        <select
+          className="rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+          value={logLimit}
+          onChange={(e) => setLogLimit(Number(e.target.value))}
+        >
+          <option value={20}>显示 20 条</option>
+          <option value={50}>显示 50 条</option>
+          <option value={100}>显示 100 条</option>
+          <option value={500}>显示 500 条</option>
+        </select>
+      </div>
       <table className="w-full text-left text-xs">
         <thead className="text-slate-400">
           <tr>

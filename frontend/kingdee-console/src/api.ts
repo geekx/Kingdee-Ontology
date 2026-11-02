@@ -74,7 +74,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ from_assistant_id, to_assistant_id, verb, noun }),
     }),
-  a2aLog: () => req<A2AAuditRow[]>('/a2a/log'),
+  a2aLog: (limit = 100) => req<A2AAuditRow[]>(`/a2a/log?limit=${limit}`),
 
   ontologyGraph: () => req<OntologyGraph>('/ontology/graph'),
   addOntologyLink: (source: string, target: string, zh: string) =>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { CapabilityChip } from '../components/CapabilityChip'
 import type { Assistant, Conversation, Message } from '../types'
@@ -24,6 +24,13 @@ function Sidebar({
   onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
 }) {
+  const [query, setQuery] = useState('')
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return conversations
+    return conversations.filter((c) => (c.title || '新对话').toLowerCase().includes(q))
+  }, [conversations, query])
+
   return (
     <aside className="flex w-72 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
       <div className="p-3">
@@ -49,8 +56,21 @@ function Sidebar({
           + 新对话
         </button>
       </div>
+      {conversations.length > 5 && (
+        <div className="px-3 pb-2">
+          <input
+            className="w-full rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800"
+            placeholder="搜索对话标题…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      )}
       <ul className="flex-1 space-y-1 overflow-y-auto px-2">
-        {conversations.map((c) => (
+        {filtered.length === 0 && (
+          <li className="px-2 py-1.5 text-xs text-slate-400">没有匹配的对话</li>
+        )}
+        {filtered.map((c) => (
           <li
             key={c.id}
             className={`group flex items-center justify-between rounded-lg px-2 py-1.5 text-sm ${
@@ -106,6 +126,23 @@ function MessageBubble({ message }: { message: Message }) {
           </div>
         )}
         <p className="whitespace-pre-wrap">{message.content}</p>
+        {!isUser && message.tool_calls.length > 0 && (
+          <details className="mt-2 text-xs">
+            <summary className="cursor-pointer select-none text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+              查看原始调用结果（{message.tool_calls.length}）
+            </summary>
+            <div className="mt-1 space-y-2">
+              {message.tool_calls.map((call, i) => (
+                <div key={i} className="rounded-lg bg-slate-50 p-2 dark:bg-slate-900/60">
+                  <div className="mb-1 font-mono text-[11px] text-slate-500">{call.tool}</div>
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] text-slate-600 dark:text-slate-300">
+                    {JSON.stringify(call.result, null, 2)}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
     </div>
   )
