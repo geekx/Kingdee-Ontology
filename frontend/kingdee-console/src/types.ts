@@ -128,9 +128,17 @@ export interface OntologyEdge {
   verified: string
 }
 
+export interface OntologyVerb {
+  name: string
+  zh: string
+  kind: 'read' | 'write'
+}
+
 export interface OntologyGraph {
   nodes: OntologyNode[]
   edges: OntologyEdge[]
+  verbs: OntologyVerb[]
+  categories: string[]
   active_profile: string
 }
 
