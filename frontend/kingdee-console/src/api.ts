@@ -6,6 +6,7 @@ import type {
   Conversation,
   Message,
   OntologyGraph,
+  OntologyNode,
   Role,
   Tenant,
   ToolCallEvent,
@@ -79,6 +80,14 @@ export const api = {
   ontologyGraph: () => req<OntologyGraph>('/ontology/graph'),
   addOntologyLink: (source: string, target: string, zh: string) =>
     req<unknown>('/ontology/links', { method: 'POST', body: JSON.stringify({ source, target, zh }) }),
+  addOntologyNoun: (noun: {
+    form_id: string
+    zh: string
+    category: string
+    allowed_verbs: string[]
+    alias?: string[]
+    default_fields?: string
+  }) => req<OntologyNode>('/ontology/nouns', { method: 'POST', body: JSON.stringify(noun) }),
 }
 
 /** 订阅工具调用事件流——节点流向动效的数据源。断线每 2s 自动重连。 */

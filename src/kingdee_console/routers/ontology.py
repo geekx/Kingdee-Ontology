@@ -27,10 +27,33 @@ async def graph() -> dict[str, Any]:
          "label": link.get("zh", ""), "verified": link.get("verified", "")}
         for link in o.links
     ]
+    # 名词编辑器要知道合法的动词名和类别——跟 kd_describe(what='verbs') 是
+    # 同一份数据，这里顺手带出来，前端不用再敲一遍。
+    verbs = [{"name": v.name, "zh": v.zh, "kind": v.kind} for v in o.verbs.values()]
     return {
-        "nodes": nodes, "edges": edges,
+        "nodes": nodes, "edges": edges, "verbs": sorted(verbs, key=lambda v: v["name"]),
+        "categories": sorted(ontology_editor.VALID_CATEGORIES),
         "active_profile": ontology_editor.active_profile_name(gw.demo),
     }
+
+
+def _active_profile_or_400(gw) -> str:
+    profile = ontology_editor.active_profile_name(gw.demo)
+    if not profile:
+        raise HTTPException(
+            status_code=400,
+            detail="没有可写入的 profile——真实模式下请先设 KINGDEE_TENANT 指到一个租户配置",
+        )
+    return profile
+
+
+def _refresh_after_edit(gw) -> None:
+    """编辑器写完 profile.yml 后调这个——demo 模式下缓存的 Dispatcher 还
+    攥着旧的 Ontology 对象，不重建看不到新写的内容（真实模式下
+    gateway.ontology 本来就是现读现 load()，不需要额外处理）。"""
+    if gw.demo:
+        from kingdee_console import demo_data
+        demo_data.reset_dispatcher()
 
 
 class AddLinkInput(BaseModel):
@@ -50,17 +73,55 @@ async def add_link(body: AddLinkInput) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    profile = ontology_editor.active_profile_name(gw.demo)
-    if not profile:
-        raise HTTPException(
-            status_code=400,
-            detail="没有可写入的 profile——真实模式下请先设 KINGDEE_TENANT 指到一个租户配置",
-        )
+    profile = _active_profile_or_400(gw)
     zh = body.zh or f"{s.zh}→{t.zh}"
     entry = ontology_editor.add_link(profile, s.form_id, t.form_id, zh)
+    _refresh_after_edit(gw)
+    return entry
 
-    if gw.demo:
-        from kingdee_console import demo_data
-        demo_data.reset_dispatcher()
 
+class AddNounInput(BaseModel):
+    form_id: str
+    zh: str
+    category: str
+    allowed_verbs: list[str]
+    alias: list[str] = []
+    default_fields: str = ""
+
+
+@router.post("/nouns")
+async def add_noun(body: AddNounInput) -> dict[str, Any]:
+    """新增（或改写）一个自定义名词，写进"当前活跃 profile"的覆盖层——
+    不碰底座 registry.yml。form_id 若已在底座/当前 profile 里存在，
+    这次提交的字段会覆盖同名字段，其它字段保留原值（跟 Ontology._merge()
+    的合并规则一致，对应 profile 系统"只改一两个字段"的设计用途）。
+    """
+    form_id = body.form_id.strip()
+    zh = body.zh.strip()
+    if not form_id or not zh:
+        raise HTTPException(status_code=400, detail="form_id 和 zh 都不能为空")
+
+    if body.category not in ontology_editor.VALID_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"category 必须是 {sorted(ontology_editor.VALID_CATEGORIES)} 之一，收到 {body.category!r}",
+        )
+
+    gw = default_gateway()
+    o = gw.ontology
+    unknown_verbs = [v for v in body.allowed_verbs if v not in o.verbs]
+    if not body.allowed_verbs:
+        raise HTTPException(status_code=400, detail="allowed_verbs 不能为空，至少选一个动词")
+    if unknown_verbs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知动词 {unknown_verbs}，可用动词：{sorted(o.verbs)}",
+        )
+
+    profile = _active_profile_or_400(gw)
+    entry = ontology_editor.add_noun(
+        profile, form_id, zh, body.category, body.allowed_verbs,
+        alias=body.alias, default_fields=body.default_fields,
+    )
+    _refresh_after_edit(gw)
     return entry

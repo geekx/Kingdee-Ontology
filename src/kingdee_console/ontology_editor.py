@@ -1,11 +1,10 @@
-"""Ontology 节点编辑器的持久化 —— 往"活跃 profile"的 links 段追加自定义下推关系。
+"""Ontology 节点编辑器的持久化 —— 往"活跃 profile"的覆盖层追加自定义
+名词（二开表单）和下推关系。
 
 不碰底座 registry.yml（共享基础设施，谁都不该从 Web UI 改它，改错一条
 影响的是所有租户），只写 profiles/<profile>/profile.yml 的覆盖层——
 跟 Ontology._merge() 的既有设计完全对齐：profile 只能新增/改写底座条目，
-不能删除（见 base/ontology.py 的 Ontology.__init__ 说明）。目前只开放
-"新增下推关系"这一种编辑——新增名词要填的字段（zh/category/allowed_verbs/
-default_fields…）比一条 link 多得多，且牵涉颜色分类等约定，留给后续迭代。
+不能删除（见 base/ontology.py 的 Ontology.__init__ 说明）。
 """
 from __future__ import annotations
 
@@ -18,6 +17,12 @@ import yaml
 from kingdee_ontology.base.ontology import load
 
 DEMO_PROFILE = "console-demo"
+
+# 复用 catalog.py 的类别集合（单一事实来源）——新增名词时类别必须落在
+# 这几个之一，否则 UI 上色会退化成灰色默认值，且语义上也没意义。
+from kingdee_console.catalog import CATEGORY_COLORS  # noqa: E402
+
+VALID_CATEGORIES = frozenset(CATEGORY_COLORS.keys())
 
 
 def runtime_profiles_dir() -> Path:
@@ -55,6 +60,33 @@ def active_profile_name(demo: bool) -> str:
     profile 必须跟正在跑的 Dispatcher 读的是同一个，否则改了却"看不见"。
     """
     return DEMO_PROFILE if demo else os.environ.get("KINGDEE_TENANT", "")
+
+
+def add_noun(profile: str, form_id: str, zh: str, category: str, allowed_verbs: list[str],
+            alias: Optional[list[str]] = None, default_fields: str = "") -> dict[str, Any]:
+    """往 profile 的 nouns 段新增/改写一个名词定义；不碰底座 registry.yml。
+
+    跟 Ontology._merge() 的合并规则对齐：form_id 若已在底座里存在，这里
+    写的字段会覆盖同名字段，其余字段（这个表单的其它属性，比如底座已有的
+    default_fields）保留底座原值——这正是 profile 系统设计给"只改一两个
+    字段"用的（见 profiles/README.md 的例子）；form_id 若不存在，就是
+    注册了一个全新的二开表单。写完清掉 load() 的 lru_cache，下一次
+    load(tenant=profile) 就能看到。
+    """
+    path = ensure_profile(profile)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data.setdefault("tenant", profile)
+    nouns = dict(data.get("nouns") or {})
+    entry: dict[str, Any] = {"zh": zh, "category": category, "allowed_verbs": list(allowed_verbs)}
+    if alias:
+        entry["alias"] = list(alias)
+    if default_fields:
+        entry["default_fields"] = default_fields
+    nouns[form_id] = entry
+    data["nouns"] = nouns
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    load.cache_clear()
+    return {"form_id": form_id, **entry}
 
 
 def add_link(profile: str, source: str, target: str, zh: str) -> dict[str, Any]:
