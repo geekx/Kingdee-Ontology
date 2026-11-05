@@ -39,6 +39,16 @@ class TestObjectType:
     def test_master_data_has_its_own_state_set(self, m):
         assert m.object_type("物料").states == ["ENABLED", "FORBIDDEN"]
 
+    def test_bill_states_exclude_saga_run_states(self, m):
+        """SAGA:* 是「一次运行」的状态，不是单据的状态——两者共用 o.states
+        这张登记表，但 states_for(bill) 不该把运行态混进单据的状态轨道，
+        不然对象卡片的状态选择器里会冒出'等待授权''补偿中'这种跟单据
+        生命周期无关的选项。"""
+        states = m.object_type("采购订单").states
+        assert not any(s.startswith("SAGA:") for s in states)
+        assert "Z:暂存" in states
+        assert "C:已审核" in states
+
     def test_view_has_no_states_and_no_write_actions(self, m):
         ot = m.object_type("即时库存")
         assert ot.states == []

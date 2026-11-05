@@ -142,6 +142,72 @@ export interface OntologyGraph {
   active_profile: string
 }
 
+export interface ObjectCardProperty {
+  name: string
+  is_lookup: boolean
+  base: string
+  value?: unknown
+}
+
+export interface ObjectCardAction {
+  verb: string
+  zh: string
+  object_type: string
+  params: { name: string; type: string; required: boolean; label: string; hint?: string }[]
+  requires_state: string[]
+  to_state: string | null
+  atomicity: string
+  idempotent: boolean
+  inverse: string | null
+  destructive: boolean
+  needs_confirmation: boolean
+  enabled: boolean
+  reason?: string
+  unverified?: boolean
+  note?: string
+}
+
+export interface ObjectCardLink {
+  name: string
+  direction: 'outgoing' | 'incoming'
+  kind: string
+  target_type: string
+  target_zh: string
+  verified: string
+  note: string
+}
+
+export interface ObjectCardOperation {
+  key: string
+  zh: string
+  owner: string
+  desc: string
+  steps: number
+  starts_here: boolean
+}
+
+export interface ObjectCardState {
+  code: string
+  zh: string
+}
+
+export interface ObjectCard {
+  object_type: string
+  zh: string
+  category: string
+  is_instance: boolean
+  id: string | null
+  title: string | null
+  state: string | null
+  state_zh: string | null
+  properties: ObjectCardProperty[]
+  actions: ObjectCardAction[]
+  links: ObjectCardLink[]
+  operations: ObjectCardOperation[]
+  states: ObjectCardState[]
+  selected_state: string | null
+}
+
 export interface ToolCallEvent {
   tool: string
   source: 'chat' | 'direct' | 'a2a'

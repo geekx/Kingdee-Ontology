@@ -254,7 +254,12 @@ docker compose --profile console up -d --build
   新增下推关系、也可以注册全新的自定义名词（二开表单：form_id/中文名/
   类别/允许动词/别名/默认字段集），两者都写进当前 profile 覆盖层，
   不碰底座 registry.yml；form_id 若已存在则按字段覆盖，不存在就是
-  新表单——跟 `Ontology._merge()` 的既有合并规则完全一致。
+  新表单——跟 `Ontology._merge()` 的既有合并规则完全一致。点一个节点
+  打开对象卡片：属性（默认字段集）、状态轨道（点一个状态模拟此刻能做
+  什么）、此刻可用/不可用的写动作（不可用时说明为什么、怎么办；不可逆
+  动作标红）、链路（下推去哪/从哪来，存疑关系有标注）、涉及的业务操作
+  编排——复用 `base/objects.py` 的 `ObjectModel`/`ActionType.availability`
+  判断层，不另写一套；自定义名词同样开得出卡片。
 - **真·多账套 A2A**：Tenant/Role/Assistant 三层模型，角色决定能碰哪些
   名词（RBAC），租户决定连哪个账套。`tenant_pool.py` 按**被问的那个助理**
   所属租户挑网关——demo 模式下每个租户各自一套独立示例数据（不是同一份

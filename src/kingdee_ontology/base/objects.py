@@ -193,8 +193,12 @@ class ObjectModel:
 
     def _states_for(self, n: Noun) -> list[str]:
         if n.category == "bill":
+            # SAGA:* 是「一次运行」的状态，不是单据状态——两者共用 o.states
+            # 这张登记表，混进来的话单据的状态轨道里会冒出"等待授权""补偿中"
+            # 这种跟单据生命周期无关的选项。
             return [s for s in self.o.states
-                    if s not in ("ENABLED", "FORBIDDEN", "NONEXISTENT")]
+                    if s not in ("ENABLED", "FORBIDDEN", "NONEXISTENT")
+                    and not s.startswith("SAGA:")]
         if n.category == "master_data":
             return ["ENABLED", "FORBIDDEN"]
         return []
