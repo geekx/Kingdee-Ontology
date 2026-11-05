@@ -5,6 +5,7 @@ import type {
   CatalogResponse,
   Conversation,
   Message,
+  ObjectCard,
   OntologyGraph,
   OntologyNode,
   Role,
@@ -78,6 +79,8 @@ export const api = {
   a2aLog: (limit = 100) => req<A2AAuditRow[]>(`/a2a/log?limit=${limit}`),
 
   ontologyGraph: () => req<OntologyGraph>('/ontology/graph'),
+  ontologyNounCard: (formId: string, state = '') =>
+    req<ObjectCard>(`/ontology/nouns/${encodeURIComponent(formId)}/card${state ? `?state=${encodeURIComponent(state)}` : ''}`),
   addOntologyLink: (source: string, target: string, zh: string) =>
     req<unknown>('/ontology/links', { method: 'POST', body: JSON.stringify({ source, target, zh }) }),
   addOntologyNoun: (noun: {

@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from kingdee_console import ontology_editor
 from kingdee_console.catalog import color_for_category
 from kingdee_console.gateway import default_gateway
+from kingdee_ontology.base.objects import ObjectModel
+from kingdee_ontology.base.ontology import OntologyError
 
 router = APIRouter(prefix="/api/ontology", tags=["ontology"])
 
@@ -54,6 +56,40 @@ def _refresh_after_edit(gw) -> None:
     if gw.demo:
         from kingdee_console import demo_data
         demo_data.reset_dispatcher()
+
+
+@router.get("/nouns/{form_id}/card")
+async def noun_card(form_id: str, state: str = "") -> dict[str, Any]:
+    """对象卡片：属性 + 状态轨道 + 此刻（模拟某状态下）能做什么。
+
+    不传 state 时按类型本身的默认判断（未知状态）给可用性；传了就是
+    "点一个状态码，看这时候哪些动作亮/灰、为什么"——跟 Explorer 的状态轨道
+    模拟一样，只是算的是这台正在跑的 Ontology（含控制台编辑器新增的名词），
+    判断逻辑复用 ObjectModel/ActionType.availability，不重新写一遍。
+    """
+    gw = default_gateway()
+    o = gw.ontology
+    m = ObjectModel(o)
+    try:
+        card = m.card(form_id)
+    except OntologyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ot = m.object_type(form_id)
+    picked = state or None
+    if picked is not None and picked not in ot.states:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{form_id} 没有状态 {picked!r}，可选：{ot.states}",
+        )
+    if picked is not None:
+        card["actions"] = [{**a.to_dict(), **a.availability(picked)} for a in ot.actions]
+        card["state"] = picked
+        card["state_zh"] = (o.states.get(picked) or {}).get("zh")
+
+    card["states"] = [{"code": s, "zh": (o.states.get(s) or {}).get("zh", s)} for s in ot.states]
+    card["selected_state"] = picked
+    return card
 
 
 class AddLinkInput(BaseModel):

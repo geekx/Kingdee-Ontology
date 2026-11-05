@@ -5,11 +5,12 @@ import {
   ReactFlow,
   type Edge,
   type Node,
+  type NodeMouseHandler,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, connectEventStream } from '../api'
-import type { OntologyGraph, OntologyNode, OntologyVerb, ToolCallEvent } from '../types'
+import type { ObjectCard, OntologyGraph, OntologyNode, OntologyVerb, ToolCallEvent } from '../types'
 
 const CATEGORY_ORDER = ['bill', 'master_data', 'view', 'system']
 const CATEGORY_LABELS: Record<string, string> = {
@@ -238,11 +239,170 @@ function NounEditorPanel({ verbs, categories, onAdded }: {
   )
 }
 
+function ObjectCardPanel({ formId, onClose }: { formId: string; onClose: () => void }) {
+  const [card, setCard] = useState<ObjectCard | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const load = (state: string) => {
+    setLoading(true)
+    setError('')
+    api
+      .ontologyNounCard(formId, state)
+      .then(setCard)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false))
+  }
+
+  // 切换节点时清空旧卡片，避免闪一下上一个对象的数据
+  useEffect(() => {
+    setCard(null)
+    load('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formId])
+
+  const stateBtnClass = (active: boolean) =>
+    `rounded-full border px-2 py-0.5 text-[11px] ${
+      active
+        ? 'border-slate-900 bg-slate-900 text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900'
+        : 'border-slate-300 text-slate-500 dark:border-slate-700 dark:text-slate-400'
+    }`
+
+  return (
+    <div className="absolute right-3 top-3 z-10 max-h-[calc(100%-24px)] w-80 overflow-y-auto rounded-xl border border-slate-200 bg-white/95 p-4 text-sm shadow-xl backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold">{card?.zh ?? formId}</h3>
+        <button
+          className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+          onClick={onClose}
+        >
+          ✕
+        </button>
+      </div>
+      <p className="mb-2 text-xs text-slate-400">{formId}</p>
+
+      {loading && <p className="text-xs text-slate-400">加载中…</p>}
+      {error && <p className="text-xs text-red-600">{error}</p>}
+
+      {card && (
+        <>
+          {card.properties.length > 0 && (
+            <div className="mb-3">
+              <h4 className="mb-1 text-xs font-semibold text-slate-500">属性（默认字段集）</h4>
+              <div className="flex flex-wrap gap-1">
+                {card.properties.map((p) => (
+                  <span
+                    key={p.name}
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] dark:bg-slate-800"
+                  >
+                    {p.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {card.states.length > 0 && (
+            <div className="mb-3">
+              <h4 className="mb-1 text-xs font-semibold text-slate-500">
+                状态轨道 <span className="font-normal text-slate-400">（模拟：点一个状态看可用性）</span>
+              </h4>
+              <div className="flex flex-wrap gap-1">
+                <button className={stateBtnClass(!card.selected_state)} onClick={() => load('')}>
+                  未知
+                </button>
+                {card.states.map((s) => (
+                  <button
+                    key={s.code}
+                    className={stateBtnClass(card.selected_state === s.code)}
+                    onClick={() => load(s.code)}
+                  >
+                    {s.zh || s.code}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mb-3">
+            <h4 className="mb-1 text-xs font-semibold text-slate-500">此刻能做什么</h4>
+            {card.actions.length === 0 && <p className="text-xs text-slate-400">没有登记的写动作</p>}
+            <div className="space-y-1.5">
+              {card.actions.map((a) => (
+                <div
+                  key={a.verb}
+                  className={`rounded border px-2 py-1 text-[11px] ${
+                    a.enabled
+                      ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/40'
+                      : 'border-slate-200 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-800/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">
+                      {a.zh} <span className="text-slate-400">{a.verb}</span>
+                    </span>
+                    {a.destructive && (
+                      <span className="shrink-0 rounded bg-red-100 px-1 text-[10px] text-red-700 dark:bg-red-950 dark:text-red-300">
+                        不可逆
+                      </span>
+                    )}
+                  </div>
+                  {!a.enabled && a.reason && <p className="mt-0.5 text-slate-500">灰：{a.reason}</p>}
+                  {a.unverified && (
+                    <p className="mt-0.5 text-amber-600 dark:text-amber-400">未核实：{a.note}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {card.links.length > 0 && (
+            <div className="mb-3">
+              <h4 className="mb-1 text-xs font-semibold text-slate-500">链路</h4>
+              <ul className="space-y-1 text-[11px]">
+                {card.links.map((l) => (
+                  <li key={`${l.direction}-${l.target_type}`} className="flex items-center gap-1">
+                    <span>{l.direction === 'outgoing' ? '→' : '←'}</span>
+                    <span>{l.target_zh}</span>
+                    {l.verified === 'suspect' && (
+                      <span className="text-amber-500" title={l.note || undefined}>
+                        （存疑）
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {card.operations.length > 0 && (
+            <div>
+              <h4 className="mb-1 text-xs font-semibold text-slate-500">涉及的业务操作编排</h4>
+              <ul className="space-y-1 text-[11px]">
+                {card.operations.map((op) => (
+                  <li key={op.key}>
+                    {op.zh}（{op.steps} 步{op.starts_here ? '，从这里开始' : ''}）
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 export function Ontology() {
   const [graph, setGraph] = useState<OntologyGraph | null>(null);
   const [activeNodes, setActiveNodes] = useState<Map<string, number>>(new Map());
   const [activeEdges, setActiveEdges] = useState<Map<string, number>>(new Map());
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
+  const onNodeClick: NodeMouseHandler = (_evt, node) => {
+    setSelectedNode((prev) => (prev === node.id ? null : node.id))
+  }
 
   const loadGraph = () => {
     api.ontologyGraph().then(setGraph)
@@ -349,7 +509,9 @@ export function Ontology() {
             {graph.active_profile}
           </p>
         </div>
-        <p className="text-xs text-slate-400">橙色高亮 = 最近 ~1.7s 内被调用（对话/直接调用/A2A 都算）</p>
+        <p className="text-xs text-slate-400">
+          橙色高亮 = 最近 ~1.7s 内被调用（对话/直接调用/A2A 都算） · 点节点看对象卡片
+        </p>
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -357,12 +519,21 @@ export function Ontology() {
         <NounEditorPanel verbs={graph.verbs} categories={graph.categories} onAdded={loadGraph} />
       </div>
 
-      <div className="flex-1 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
-        <ReactFlow nodes={nodes} edges={edges} fitView proOptions={{ hideAttribution: true }}>
+      <div className="relative flex-1 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          fitView
+          proOptions={{ hideAttribution: true }}
+          onNodeClick={onNodeClick}
+        >
           <Background />
           <Controls />
           <MiniMap pannable zoomable />
         </ReactFlow>
+        {selectedNode && (
+          <ObjectCardPanel formId={selectedNode} onClose={() => setSelectedNode(null)} />
+        )}
       </div>
     </div>
   )
